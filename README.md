@@ -34,6 +34,32 @@ pnpm build
 pnpm preview   # web na http://localhost:4173
 ```
 
+## Wdrożenie: jeden proces, jeden adres
+
+Na serwerze API serwuje też zbudowany frontend, więc strona i `/api` są pod tym samym adresem:
+
+```bash
+pnpm install
+pnpm build                       # apps/api/dist + apps/web/dist
+NODE_ENV=production RESERVATION_TTL_MINUTES=2 pnpm start
+# za jednym reverse proxy dodaj: TRUST_PROXY=1
+```
+
+- Przy `NODE_ENV=production` API słucha na `0.0.0.0` (inaczej `127.0.0.1`), więc działa w kontenerze i na serwerze. `HOST` nadpisuje tę wartość, a port bierze się z `PORT` (domyślnie `3001`).
+- Gdy istnieje `apps/web/dist/index.html`, API serwuje frontend. Trasy Reacta (`/lab`, `/events/...`) dostają `index.html`. `/api/*` dla nieznanych ścieżek i brakujące pliki dalej zwracają JSON `404 { "error": "NOT_FOUND" }`. Wyłączysz to przez `SERVE_WEB=false`, a inny katalog wskażesz przez `WEB_DIST_PATH`.
+- `TRUST_PROXY` ustawiaj **tylko wtedy, gdy przed API naprawdę stoi proxy**. Bez proxy zostaw `false` (domyślnie): inaczej klient sam dopisze sobie `X-Forwarded-For` i obejdzie limit. Za jednym reverse proxy (nginx, Render, Railway) ustaw `TRUST_PROXY=1`, za dwoma (np. Cloudflare + nginx) `TRUST_PROXY=2` — to liczba proxy przed API. Wtedy limit liczy prawdziwe IP klienta, a podrobiony `X-Forwarded-For` go nie obchodzi, bo API bierze adres dopisany przez proxy, nie przez klienta. Nie używaj `TRUST_PROXY=true`: wtedy API ufa całemu nagłówkowi i ostrzega o tym przy starcie.
+- Panel ops jest przy `NODE_ENV=production` domyślnie **wyłączony** (`/api/ops/*` → `404`). Patrz [Bezpieczeństwo panelu ops](#bezpieczeństwo-panelu-ops).
+- Mock poczty (`apps/mock-mail`) na wdrożeniu nie jest potrzebny. Bez niego bilet nadal jest wydawany, a job e-mail po limicie prób trafia do DLQ.
+
+## Tryb testowy prowadzącego
+
+Warunek wstępny testu chaosu: `expiresAt` wypada **około 2 minut** od rezerwacji.
+
+1. Ustaw `RESERVATION_TTL_MINUTES=2`.
+2. **Usuń** `RESERVATION_TTL_SECONDS` z `.env` i ze zmiennych platformy. Ta zmienna ma pierwszeństwo przed `_MINUTES`, więc zapomniane `RESERVATION_TTL_SECONDS=20` po cichu psuje tryb testowy.
+3. Po starcie sprawdź log `Efektywny TTL rezerwacji: 120 s (2.0 min), źródło: RESERVATION_TTL_MINUTES`. Gdy ustawione są obie zmienne, w logu pojawia się ostrzeżenie.
+4. Na działającym wdrożeniu sprawdź: `curl https://<adres>/api/health` → `"reservationTtlSeconds": 120`.
+
 ## Demo w pięciu krokach
 
 1. Wejdź na <http://localhost:5173> i wybierz pierwszy kurs.
@@ -52,7 +78,7 @@ Wejdź w **Laboratorium**, ustaw dostawcę e-mail na **Awaria**, a potem kup kol
 
 ### Demo przeciążenia (E05)
 
-W laboratorium kliknij **Test limitu: 30 prób zakupu**. Test wysyła 30 zakupów nieistniejącej rezerwacji, więc nie tworzy danych. Oczekiwany wynik to około 20 × `404` i 10 × `429` — nadmiar zamienia się w szybką odmowę zamiast obciążenia bazy.
+W laboratorium kliknij **Test limitu: 60 prób zakupu**. Test wysyła 60 zakupów nieistniejącej rezerwacji, więc nie tworzy danych. Oczekiwany wynik to około 40 × `404` i 20 × `429` — nadmiar zamienia się w szybką odmowę zamiast obciążenia bazy.
 
 ## Architektura
 
@@ -86,18 +112,21 @@ Mapowanie praktyk na kod i scenariusze: [`docs/PRACTICES.md`](./docs/PRACTICES.m
 | --- | --- | --- | --- |
 | `GET` | `/api/events` | `200 EventSummary[]` | — |
 | `GET` | `/api/events/:id` | `200 { event, takenSeats }` | `404 EVENT_NOT_FOUND` |
-| `POST` | `/api/reservations` | `201 { reservationId, expiresAt }` | `400`, `404`, `409 SEAT_UNAVAILABLE` |
+| `POST` | `/api/reservations` | `201 { reservationId, expiresAt }`; powtórka identycznej → `200`, ta sama rezerwacja | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
 | `POST` | `/api/reservations/:id/purchase` | `200 { code }` | `404`, `409 RESERVATION_EXPIRED` |
 
-Wszystkie błędy mają envelope `{ error: string }`; status HTTP niesie znaczenie. Zakup jest idempotentny: drugi request zwraca ten sam kod i nie tworzy drugiego joba.
+Wszystkie błędy mają envelope `{ error: string }`; status HTTP niesie znaczenie.
+
+- Rezerwacja jest idempotentna: powtórzony identyczny request (ten sam kurs, miejsce, imię i e-mail, rezerwacja jeszcze aktywna) zwraca `200` z tą samą rezerwacją (`reservationId`, `expiresAt`) zamiast `409`. Dotyczy to też dwóch równoległych requestów.
+- Zakup jest idempotentny: drugi request zwraca ten sam kod i nie tworzy drugiego joba. Zakup nie ma body; `Content-Type: application/json` z pustym body też jest akceptowany.
 
 Dodatkowo, poza kontraktem:
 
-- `GET /api/health` — healthcheck bez limitu i load sheddingu,
+- `GET /api/health` — healthcheck bez limitu i load sheddingu; pokazuje `reservationTtlSeconds`,
 - `GET /api/ops/status`, `GET /api/ops/snapshot`, `GET /api/ops/jobs`, `POST /api/ops/jobs/:id/retry`,
 - `GET /api/ops/mail/messages`, `POST /api/ops/mail/control`, `POST /api/ops/mail/reset`.
 
-Panel ops można wyłączyć przez `OPS_ENABLED=false`.
+Panel ops można wyłączyć przez `OPS_ENABLED=false`; przy `NODE_ENV=production` jest domyślnie wyłączony.
 
 ## Gdzie siedzą praktyki
 
@@ -107,7 +136,7 @@ Panel ops można wyłączyć przez `OPS_ENABLED=false`.
 | E04 | Retry | `apps/api/src/resilience.ts` + `worker.ts` | liczba prób, backoff, ten sam `Idempotency-Key` |
 | E04 | Circuit breaker | `apps/api/src/resilience.ts` | stan `zamknięty / otwarty / półotwarty` |
 | E04 | Fallback i degradacja | `apps/api/src/worker.ts`, kolejka | bilet wydany mimo awarii poczty; e-mail czeka w tle |
-| E05 | Rate limiting | `apps/api/src/app.ts` — token bucket per IP | `429` + `Retry-After` |
+| E05 | Rate limiting | `apps/api/src/app.ts` — token bucket per IP; rezerwacja 60 na start + 2/s, odmowy walidacji (`400`/`404`) oddają żeton | `429` + `Retry-After` |
 | E05 | Load shedding | `apps/api/src/app.ts` — limit in-flight | szybkie `503 OVERLOADED` |
 | E05 | Bulkhead | `apps/api/src/resilience.ts` — osobne pule | odczyt i zapis nie zabierają sobie miejsc |
 | E06 | Kolejka | `apps/api/src/jobs.ts` — tabela `jobs` | gotowe / retry / zrobione / DLQ |
@@ -121,7 +150,8 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 ## TTL i wygasanie
 
 - Domyślnie rezerwacja trzyma miejsce **15 minut** (`RESERVATION_TTL_MINUTES`).
-- Do testów i demo można użyć `RESERVATION_TTL_SECONDS`, np. `RESERVATION_TTL_SECONDS=20 pnpm dev`.
+- Do testów i demo można użyć `RESERVATION_TTL_SECONDS`, np. `RESERVATION_TTL_SECONDS=20 pnpm dev`. Ma pierwszeństwo przed `_MINUTES`; gdy ustawisz obie, API ostrzega w logu startowym.
+- Efektywny TTL i jego źródło są w logu startowym oraz w `GET /api/health` (`reservationTtlSeconds`).
 - `expiresAt` jest liczone na serwerze w UTC; przeglądarka tylko je pokazuje.
 - Wygaszanie jest leniwe: każdy odczyt mapy i zakup sprawdza czas. Nie ma crona.
 - Po TTL `takenSeats` nie zawiera miejsca, a zakup zwraca `409 RESERVATION_EXPIRED`.
@@ -129,12 +159,12 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 ## Testy i jakość
 
 ```bash
-pnpm test        # 43 testy: shared, API, worker, resilience, guardy
+pnpm test        # 69 testów: shared, API, worker, resilience, guardy, scenariusze testu chaosu, wdrożenie, web
 pnpm typecheck   # TypeScript strict we wszystkich pakietach
 pnpm build       # API + mock-mail + web
 ```
 
-Testy API używają wstrzykiwanego zegara, więc wygaśnięcie TTL nie trwa 15 minut. Testy workera pokrywają ack, retry, DLQ i przywracanie joba. Testy resilience pokrywają stany bezpiecznika, token bucket i bulkhead.
+Testy API używają wstrzykiwanego zegara, więc wygaśnięcie TTL nie trwa 15 minut. `apps/api/test/chaos.test.ts` odtwarza szybki przebieg testera z jednego IP (B3 → B1 → B2 → kolejne rezerwacje bez `429`), zalew B5 i podrabianie `X-Forwarded-For` przy `TRUST_PROXY=1`. Testy workera pokrywają ack, retry, DLQ i przywracanie joba. Testy resilience pokrywają stany bezpiecznika, token bucket i bulkhead.
 
 ## Konfiguracja
 
@@ -142,8 +172,11 @@ Najważniejsze zmienne (pełna lista w `.env.example`):
 
 | Zmienna | Domyślnie | Opis |
 | --- | --- | --- |
-| `RESERVATION_TTL_MINUTES` | `15` | czas trzymania miejsca |
-| `RESERVATION_TTL_SECONDS` | — | nadpisanie TTL w sekundach do demo/testów |
+| `NODE_ENV` | — | `production` zmienia wartości domyślne `HOST` i `OPS_ENABLED` |
+| `HOST` | `127.0.0.1`; przy `NODE_ENV=production` `0.0.0.0` | adres nasłuchu API |
+| `PORT` | `3001` | port API |
+| `RESERVATION_TTL_MINUTES` | `15` | czas trzymania miejsca; tryb testowy: `2` |
+| `RESERVATION_TTL_SECONDS` | — | nadpisanie TTL w sekundach do demo/testów; **ma pierwszeństwo** przed `_MINUTES` |
 | `DATABASE_PATH` | `data/pas.sqlite` | SQLite; przy `pnpm dev` plik jest w `apps/api/data/` |
 | `MAIL_TIMEOUT_MS` | `1200` | timeout zależności pocztowej |
 | `MAIL_RETRY_ATTEMPTS` | `2` | próby w jednym podejściu workera |
@@ -154,13 +187,36 @@ Najważniejsze zmienne (pełna lista w `.env.example`):
 | `LOAD_SHED_MAX_IN_FLIGHT` | `80` | próg load sheddingu |
 | `READ_BULKHEAD_CONCURRENCY` | `32` | pula odczytów |
 | `WRITE_BULKHEAD_CONCURRENCY` | `8` | pula zapisów |
-| `OPS_ENABLED` | `true` | panel `/lab`; wyłącz na produkcji |
+| `RATE_LIMIT_RESERVATION_CAPACITY` | `60` | limit rezerwacji per IP: pojemność kubełka |
+| `RATE_LIMIT_RESERVATION_REFILL_PER_SECOND` | `2` | limit rezerwacji per IP: doładowanie na sekundę |
+| `OPS_ENABLED` | `true`; przy `NODE_ENV=production` `false` | panel `/lab` i `/api/ops/*` |
+| `OPS_TOKEN` | — | gdy ustawiony, `/api/ops/*` wymaga `Authorization: Bearer <token>` |
+| `TRUST_PROXY` | `false` | za reverse proxy ustaw **liczbę proxy** przed API, np. `1`; `true` jest podatne na podrobiony `X-Forwarded-For` |
+| `SERVE_WEB` | `true` | serwowanie `apps/web/dist` przez API, gdy katalog istnieje |
+| `WEB_DIST_PATH` | `apps/web/dist` | inny katalog zbudowanego frontendu |
 
 Reset danych demo:
 
 ```bash
 rm -rf apps/api/data
 ```
+
+## Limit rezerwacji
+
+Limit rezerwacji to token bucket per IP: **60 na start i doładowanie 2 na sekundę**. Do limitu liczą się tylko requesty, które przeszły walidację. `400` i `404` (zły body, nieistniejący kurs lub miejsce) oddają żeton, bo nie dotknęły bazy, a seria złych requestów i tak jest ograniczona limitem globalnym (300 na start + 10/s). `409 SEAT_UNAVAILABLE` żetonu nie oddaje, więc zalew rezerwacji zajętych miejsc też dostaje `429`.
+
+- Szybki przebieg testera z jednego IP mieści się w limicie: 14 złych requestów (0 żetonów), 4 powtórki rezerwacji, 20 równoczesnych prób jednego miejsca i ok. 20 kolejnych rezerwacji pod testy zakupu i TTL to ok. 44 z 60 żetonów.
+- 100 rezerwacji w 10 s z jednego IP: po ok. 60–80 odpowiedziach `2xx`/`409` reszta dostaje `429` z `Retry-After`. Inny klient ma osobny kubełek.
+- Limit zakupów (40 + 2/s) się nie zmienił, a `404` przy zakupie nadal zużywa żeton. Na tym opiera się demo przeciążenia w `/lab`.
+
+## Bezpieczeństwo panelu ops
+
+`/api/ops/*` pokazuje `reservationId` i treść maili z kodami biletów. Mając `reservationId`, można kupić cudzą rezerwację, dlatego:
+
+- przy `NODE_ENV=production` panel jest domyślnie wyłączony (`404`),
+- jeśli chcesz go mieć na wdrożeniu, ustaw `OPS_ENABLED=true` **i** `OPS_TOKEN=<losowy sekret>`; wtedy każdy request do `/api/ops/*` musi mieć `Authorization: Bearer <sekret>`, inaczej dostaje `401 UNAUTHORIZED`,
+- `OPS_ENABLED=true` bez `OPS_TOKEN` na produkcji działa, ale API ostrzega w logu startowym,
+- strona `/lab` w przeglądarce nie wysyła tokenu, więc przy włączonym `OPS_TOKEN` pokazuje błąd połączenia. To celowe: panel z tokenem służy do `curl`, nie do publicznego UI.
 
 ## Co jest poza zakresem
 
@@ -171,5 +227,5 @@ Zgodnie z planem: płatności online, logowanie, miejsca pośrednie, anulowanie 
 - **Jedna instancja:** SQLite i limity w pamięci są wystarczające na demo. Przy wielu instancjach potrzebny jest wspólny licznik (np. Redis/Upstash) i wspólna kolejka.
 - **Worker w API:** w Etapie I worker działa w procesie API. Semantyka claim/ack/lease jest już rozdzielona, więc przeniesienie do osobnego procesu lub kolejki (BullMQ, Temporal, Inngest) nie zmienia kontraktu.
 - **Idempotencja:** dostawca dostaje `Idempotency-Key = job.id`. To daje efekt exactly-once przy at-least-once dostarczaniu.
-- **Bezpieczeństwo:** panel ops jest otwarty lokalnie; na produkcji ustaw `OPS_ENABLED=false` i dodaj auth. Rate limiting używa `request.ip`; za reverse proxy skonfiguruj zaufane nagłówki.
+- **Bezpieczeństwo:** panel ops jest otwarty lokalnie, a na produkcji domyślnie wyłączony albo chroniony `OPS_TOKEN`. Rate limiting używa `request.ip`; za reverse proxy ustaw `TRUST_PROXY=1` (liczbę proxy), inaczej wszyscy klienci dzielą jeden limit.
 - **Etap II:** płatność dokłada się jako osobna zależność krytyczna, z własnym timeoutem, breakerem i fallbackiem `pending` — bez zmiany modelu rezerwacji i TTL.

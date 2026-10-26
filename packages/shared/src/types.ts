@@ -89,6 +89,7 @@ export type ApiErrorCode =
   | "OVERLOADED"
   | "BUSY"
   | "MAIL_UNAVAILABLE"
+  | "UNAUTHORIZED"
   | "NOT_FOUND"
   | "INTERNAL_ERROR";
 

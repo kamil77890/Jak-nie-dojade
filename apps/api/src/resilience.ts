@@ -174,6 +174,13 @@ export class TokenBucket {
     };
   }
 
+  /** Oddaje żeton, np. gdy request okazał się błędny i nie dotknął bazy. */
+  refund(key: string, cost = 1): void {
+    const bucket = this.buckets.get(key);
+    if (!bucket) return;
+    bucket.tokens = Math.min(this.options.capacity, bucket.tokens + cost);
+  }
+
   private prune(now: number): void {
     const idleLimit = 10 * 60_000;
     for (const [key, bucket] of this.buckets) {

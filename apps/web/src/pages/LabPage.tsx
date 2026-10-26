@@ -122,7 +122,7 @@ export function LabPage() {
     setProbe(null);
 
     const statuses = await Promise.all(
-      Array.from({ length: 30 }, async () => {
+      Array.from({ length: 60 }, async () => {
         try {
           await purchaseReservation("00000000-0000-0000-0000-000000000000");
           return 200;
@@ -357,7 +357,7 @@ export function LabPage() {
             disabled={Boolean(busy)}
           >
             {busy === "probe" ? <span className="spinner" aria-hidden="true" /> : <Activity size={15} />}
-            Test limitu: 30 prób zakupu
+            Test limitu: 60 prób zakupu
           </button>
 
           {probe ? (
@@ -369,7 +369,7 @@ export function LabPage() {
             </p>
           ) : (
             <p className="lab-hint">
-              Test wysyła 30 zakupów nieistniejącej rezerwacji. Nie tworzy danych, ale pokazuje, jak
+              Test wysyła 60 zakupów nieistniejącej rezerwacji. Nie tworzy danych, ale pokazuje, jak
               limit zamienia nadmiar w 429.
             </p>
           )}
@@ -551,7 +551,7 @@ export function LabPage() {
             <AlertTriangle size={20} />
             <h3>Ruch rośnie</h3>
             <p>
-              Kliknij test 30 zakupów. Część requestów dostanie 429 zamiast obciążać bazę. Przy
+              Kliknij test 60 zakupów. Część requestów dostanie 429 zamiast obciążać bazę. Przy
               większym tłoku load shedding odpowiada szybkim 503.
             </p>
           </article>

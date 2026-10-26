@@ -41,6 +41,8 @@ export async function createTestContext(options: {
     startWorker: false,
     config: {
       rateLimit: { enabled: false },
+      // Testy nie zależą od tego, czy ktoś zbudował apps/web.
+      webDistPath: null,
       worker: { enabled: false, baseBackoffMs: 1_000, maxBackoffMs: 60_000 },
       mail: { retryBaseDelayMs: 0, breakerFailureThreshold: 100 },
       ...options.overrides,

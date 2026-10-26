@@ -9,7 +9,8 @@ Wersja 1.0. Kontrakt jest wspólny dla kart A, B i C. Zmiana typu, formatu ident
 | 01 | `takenSeats` | `string[]` — wyłącznie `seatId` miejsc kupionych oraz z ważną rezerwacją; bez duplikatów i bez wygasłych |
 | 02 | odmowa zakupu | `409` + `{ "error": "RESERVATION_EXPIRED" }` |
 | 03 | format `seatId` | `"wagon-miejsce"`, np. `"5-12"`; `eventId` i `seatId` są tekstem |
-| 04 | TTL | jedno źródło: `RESERVATION_TTL_MINUTES` (domyślnie 15), w testach/demo `RESERVATION_TTL_SECONDS` |
+| 04 | TTL | jedno źródło: `RESERVATION_TTL_MINUTES` (domyślnie 15), w testach/demo `RESERVATION_TTL_SECONDS` (ma pierwszeństwo); tryb testowy prowadzącego: `RESERVATION_TTL_MINUTES=2` bez `_SECONDS` |
+| 05 | powtórzona rezerwacja | identyczny request (kurs, miejsce, imię, e-mail) przy aktywnej rezerwacji → `200` z tą samą rezerwacją |
 
 Dane demo: 3 kursy, każdy z wagonami **5** i **6**, po **20 miejsc** (1–20). Siatka wagonu to 5 rzędów × 4 miejsca. Pozycja wynika z numeru: 1 i 4 przy oknie, 2 i 3 przy korytarzu.
 
@@ -134,6 +135,8 @@ Walidacja: `eventId` i `seatId` niepuste stringi, `customerName` 2–80 znaków 
 }
 ```
 
+`200` — powtórka identycznego requestu: ten sam `eventId`, `seatId`, `customerName` i `email` (po `trim`, e-mail bez rozróżniania wielkości liter), a wcześniejsza rezerwacja jest nadal aktywna. Odpowiedź ma ten sam kształt i te same `reservationId` oraz `expiresAt`; nowa rezerwacja nie powstaje, a TTL się nie przedłuża. Dotyczy to też dwóch równoległych requestów. Inna osoba na tym samym miejscu dostaje `409`.
+
 Odmowy:
 
 | Status | `error` | Kiedy |
@@ -141,14 +144,14 @@ Odmowy:
 | `400` | `VALIDATION_ERROR` | brak pola, zły e-mail, za krótkie imię |
 | `404` | `EVENT_OR_SEAT_NOT_FOUND` | nie ma kursu albo miejsca w tym kursie |
 | `409` | `SEAT_UNAVAILABLE` | miejsce jest kupione albo ma ważną rezerwację |
-| `429` | `RATE_LIMITED` | przekroczony limit rezerwacji |
+| `429` | `RATE_LIMITED` | przekroczony limit rezerwacji per IP (60 na start + 2/s); nagłówek `Retry-After`. Odmowy `400`/`404` nie zużywają limitu, `409` zużywa |
 | `503` | `BUSY` / `OVERLOADED` | przeciążenie lub pełna pula zapisów |
 
 Zapis jest atomowy: sprawdzenie i insert dzieją się w jednej transakcji `BEGIN IMMEDIATE`, a częściowy unikalny indeks `(event_id, seat_id) WHERE status IN ('active','purchased')` jest ostatnią linią obrony.
 
 ### `POST /api/reservations/:id/purchase`
 
-Brak body.
+Brak body. `Content-Type: application/json` z pustym body jest traktowany jak brak body.
 
 `200`
 
@@ -219,7 +222,7 @@ Te endpointy istnieją dla demo praktyk E04–E06 i panelu `/lab`. Nie są potrz
 
 | Endpoint | Rola |
 | --- | --- |
-| `GET /api/health` | healthcheck poza limitem i load sheddingiem |
+| `GET /api/health` | healthcheck poza limitem i load sheddingiem; `{ ok, now, reservationTtlSeconds }` |
 | `GET /api/ops/status` | bezpiecznik, kolejka, pule, liczniki, tryb mocka poczty |
 | `GET /api/ops/snapshot` | status + joby + skrzynka w jednym requeście |
 | `GET /api/ops/jobs?limit=25` | ostatnie joby |
@@ -228,7 +231,9 @@ Te endpointy istnieją dla demo praktyk E04–E06 i panelu `/lab`. Nie są potrz
 | `POST /api/ops/mail/control` | `{ "mode": "healthy" \| "slow" \| "down" \| "flaky" }` |
 | `POST /api/ops/mail/reset` | czyszczenie skrzynki |
 
-`OPS_ENABLED=false` wyłącza całą tę grupę (poza healthcheckiem).
+`OPS_ENABLED=false` wyłącza całą tę grupę (poza healthcheckiem) i wtedy odpowiada ona `404 NOT_FOUND`. Przy `NODE_ENV=production` grupa jest domyślnie wyłączona. Gdy ustawiony jest `OPS_TOKEN`, każdy request do `/api/ops/*` wymaga nagłówka `Authorization: Bearer <OPS_TOKEN>`, a bez niego dostaje `401 UNAUTHORIZED`.
+
+Nieznana ścieżka pod `/api/*` zawsze zwraca `404 { "error": "NOT_FOUND" }`, także wtedy, gdy API serwuje zbudowany frontend.
 
 ## 8. Poza kontraktem Etapu I
 
