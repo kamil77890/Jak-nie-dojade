@@ -12,7 +12,7 @@ import { PurchasePanel } from "../components/PurchasePanel";
 import { RouteStub } from "../components/RouteStub";
 import { ArrowLeft, Clock, Shield } from "../components/Icons";
 import { timeFromIso, trainLabel, weekdayPl } from "../lib/format";
-import { loadReservation } from "../lib/session";
+import { loadReservation, loadTicket } from "../lib/session";
 import { useCountdown, useDocumentTitle } from "../hooks/useCountdown";
 
 export function ReservationPage() {
@@ -29,7 +29,14 @@ export function ReservationPage() {
   );
 
   useDocumentTitle("Twoja rezerwacja");
-  const { remainingMs, expired } = useCountdown(reservation?.expiresAt ?? new Date(0).toISOString());
+  // Bilet z tej rezerwacji już jest — np. po „Wstecz” z ekranu biletu.
+  const [ticket] = useState(() => loadTicket(reservationId));
+  // 409 z serwera ma pierwszeństwo przed licznikiem w przeglądarce.
+  const [serverExpired, setServerExpired] = useState(false);
+
+  const countdown = useCountdown(reservation?.expiresAt ?? new Date(0).toISOString());
+  const expired = countdown.expired || serverExpired;
+  const remainingMs = serverExpired ? 0 : countdown.remainingMs;
 
   if (!reservation) {
     return (
@@ -40,6 +47,22 @@ export function ReservationPage() {
           action={
             <Link className="button button--primary" to="/">
               Wróć do rozkładu
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
+
+  if (ticket) {
+    return (
+      <div className="page page--narrow">
+        <EmptyPanel
+          title="Bilet jest już kupiony"
+          message={`Ta rezerwacja zakończyła się zakupem. Kod biletu: ${ticket.code}.`}
+          action={
+            <Link className="button button--primary" to={`/reservations/${reservationId}/ticket`}>
+              Pokaż bilet
             </Link>
           }
         />
@@ -159,6 +182,7 @@ export function ReservationPage() {
             reservation={reservation}
             expired={expired}
             onPurchased={handlePurchased}
+            onExpired={() => setServerExpired(true)}
           />
 
           <section className="aside-card">

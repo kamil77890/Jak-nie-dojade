@@ -13,6 +13,7 @@ import { createReservation, getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
 import { toSummary, trainLabel, weekdayPl } from "../lib/format";
 import { loadPassenger, savePassenger, saveReservation } from "../lib/session";
+import { formatTtl, useReservationTtl } from "../lib/ttl";
 import { useDocumentTitle } from "../hooks/useCountdown";
 
 interface FieldErrors {
@@ -33,12 +34,18 @@ export function ReservePage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const ttl = formatTtl(useReservationTtl());
 
   useDocumentTitle("Rezerwacja miejsca");
 
   useEffect(() => {
     let alive = true;
+    // Ta sama trasa z innym kursem lub miejscem nie może pokazać starego błędu ani formularza.
     setLoading(true);
+    setLoadError(null);
+    setEvent(null);
+    setSeatTaken(false);
+    setServerError(null);
     getEvent(eventId)
       .then((result) => {
         if (!alive) return;
@@ -180,8 +187,8 @@ export function ReservePage() {
           Miejsce <em>na Ciebie.</em>
         </h1>
         <p className="reserve-lead">
-          Rezerwujesz {seatLabel.toLowerCase()} na kurs {event.relation}. Trzymamy je 15 minut, a
-          potem wraca do puli — bez pytań i bez opłat.
+          Rezerwujesz miejsce na kurs {event.relation}. Trzymamy je {ttl}, a potem wraca do puli
+          — bez pytań i bez opłat.
         </p>
         <p className="reserve-date">{formatEventDate(event.date)}</p>
       </section>
@@ -190,6 +197,7 @@ export function ReservePage() {
         <section className="form-card">
           <div className="form-card-head">
             <p className="eyebrow">Kto jedzie?</p>
+            <p className="form-card-seat">{seatLabel}</p>
             <h2>Dane podróżnego</h2>
             <p>Potrzebujemy tylko imienia i adresu e-mail. Konto nie jest wymagane.</p>
           </div>
@@ -264,13 +272,13 @@ export function ReservePage() {
                 ) : (
                   <>
                     <Clock size={19} />
-                    Rezerwuję na 15 minut
+                    Rezerwuję na {ttl}
                   </>
                 )}
               </button>
               <p className="form-note">
                 <Shield size={15} />
-                Rezerwacja jest ważna 15 minut. Nie pobieramy danych karty.
+                Rezerwacja jest ważna {ttl}. Nie pobieramy danych karty.
               </p>
             </div>
           </form>

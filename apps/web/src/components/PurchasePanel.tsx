@@ -9,10 +9,13 @@ export function PurchasePanel({
   reservation,
   expired,
   onPurchased,
+  onExpired,
 }: {
   reservation: ReservationView;
   expired: boolean;
   onPurchased: (ticket: Ticket) => void;
+  /** Serwer odrzucił zakup jako wygasły, choć licznik w przeglądarce jeszcze trwa. */
+  onExpired?: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [forcedExpired, setForcedExpired] = useState(false);
@@ -40,6 +43,7 @@ export function PurchasePanel({
     } catch (caught) {
       if (caught instanceof ApiRequestError && caught.code === "RESERVATION_EXPIRED") {
         setForcedExpired(true);
+        onExpired?.();
       }
       setError(describeApiError(caught));
     } finally {

@@ -48,8 +48,8 @@ export function TicketPage() {
           Bilet <em>gotowy.</em>
         </h1>
         <p>
-          Miejsce {formatSeatLabel(ticket.seatId).toLowerCase()} jest Twoje. Pokaż kod przy wejściu
-          na peron — potwierdzenie e-mail poleci osobno, w tle.
+          {formatSeatLabel(ticket.seatId)} — to miejsce jest Twoje. Pokaż kod przy wejściu na peron
+          — potwierdzenie e-mail poleci osobno, w tle.
         </p>
       </section>
 

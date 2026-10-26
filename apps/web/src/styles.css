@@ -1440,6 +1440,13 @@ svg {
   opacity: 0.55;
 }
 
+/* Ta sama przerywana linia co przejście na mapie. */
+.legend-aisle {
+  width: 0;
+  height: 12px;
+  border-left: 1px dashed var(--muted);
+}
+
 .legend-note {
   margin-left: auto;
   text-transform: none;
@@ -1607,6 +1614,14 @@ svg {
 
 .form-card-head h2 {
   font-size: clamp(1.8rem, 3vw, 2.3rem);
+}
+
+/* Etykieta miejsca w formularzu, dokładnie jak w karcie B: „Wagon 5, miejsce 12”. */
+.form-card-seat {
+  margin: 0.35rem 0 0.2rem;
+  color: var(--green);
+  font-weight: 700;
+  font-size: 1.05rem;
 }
 
 .form-card-head > p:last-child {

@@ -95,9 +95,9 @@ To jest graceful degradation: kasa działa dalej w okrojonej wersji (bez potwier
 
 | Zakres | Pojemność | Dopełnianie | Klucz |
 | --- | --- | --- | --- |
-| globalny `/api` | 120 żetonów | 2/s | IP |
-| `POST /api/reservations` | 10 | 0,2/s | IP |
-| `POST /api/reservations/:id/purchase` | 20 | 0,25/s | IP |
+| globalny `/api` | 300 żetonów | 10/s | IP |
+| `POST /api/reservations` | 60 | 2/s | IP |
+| `POST /api/reservations/:id/purchase` | 40 | 2/s | IP |
 
 Token bucket pozwala na krótki skok do pojemności wiadra, ale stały zalew ogranicza tempo dopełniania. Po przekroczeniu:
 

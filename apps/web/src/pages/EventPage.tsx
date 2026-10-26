@@ -12,6 +12,7 @@ import { SeatMap } from "../components/SeatMap";
 import { getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
 import { seatsInWagonLabel, toSummary, trainLabel, weekdayPl } from "../lib/format";
+import { formatTtl, useReservationTtl } from "../lib/ttl";
 import { useDocumentTitle } from "../hooks/useCountdown";
 
 export function EventPage() {
@@ -29,6 +30,7 @@ export function EventPage() {
   const lastLocationKey = useRef(location.key);
 
   useDocumentTitle(data ? data.event.relation : "Kurs");
+  const ttl = formatTtl(useReservationTtl());
 
   const load = useCallback(
     async (mode: "initial" | "refresh") => {
@@ -235,8 +237,8 @@ export function EventPage() {
             <p className="eyebrow">Wybór miejsca</p>
             <h2>Kliknij wolne miejsce</h2>
             <p>
-              Otworzy się formularz z numerem miejsca. Rezerwacja trzyma je 15 minut — potem wraca
-              do puli.
+              Otworzy się formularz z numerem miejsca. Rezerwacja trzyma je {ttl} — potem wraca do
+              puli.
             </p>
             <ul className="aside-list">
               <li>

@@ -86,6 +86,10 @@ export function SeatMap({ wagon, takenSeats, onSeatClick }: SeatMapProps) {
             <span className="legend-window" aria-hidden="true" />
             przy oknie
           </span>
+          <span className="legend-item">
+            <span className="legend-aisle" aria-hidden="true" />
+            przy korytarzu (miejsca 2 i 3 w rzędzie)
+          </span>
           <span className="legend-note">{seatsInWagonLabel(wagon.seats.length)} w wagonie</span>
         </div>
       </div>

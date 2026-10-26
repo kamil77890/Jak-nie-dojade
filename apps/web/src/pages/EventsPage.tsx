@@ -17,10 +17,12 @@ import {
   weekdayPl,
   yearOfDate,
 } from "../lib/format";
+import { formatTtl, useReservationTtl } from "../lib/ttl";
 import { useDocumentTitle } from "../hooks/useCountdown";
 
 export function EventsPage() {
   useDocumentTitle("Rozkład jazdy");
+  const ttl = formatTtl(useReservationTtl());
   const [events, setEvents] = useState<EventSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,15 +80,15 @@ export function EventsPage() {
           <dl className="hero-facts">
             <div>
               <dt>Kursy</dt>
-              <dd>03</dd>
+              <dd>{events ? String(events.length).padStart(2, "0") : "—"}</dd>
             </div>
             <div>
-              <dt>Wagony</dt>
-              <dd>02</dd>
+              <dt>Miejsca</dt>
+              <dd>numerowane</dd>
             </div>
             <div>
               <dt>Rezerwacja</dt>
-              <dd>15 min</dd>
+              <dd>{ttl}</dd>
             </div>
             <div>
               <dt>Płatności</dt>
@@ -206,7 +208,7 @@ export function EventsPage() {
           <article className="step-card">
             <span className="step-number">02</span>
             <Clock size={22} />
-            <h3>Zarezerwuj na 15 minut</h3>
+            <h3>Zarezerwuj na {ttl}</h3>
             <p>Imię i e-mail wystarczą. Licznik pokazuje czas serwera, nie zegar przeglądarki.</p>
           </article>
           <article className="step-card">
