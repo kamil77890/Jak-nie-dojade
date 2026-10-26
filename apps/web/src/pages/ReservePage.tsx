@@ -25,6 +25,7 @@ export function ReservePage() {
   const navigate = useNavigate();
 
   const [event, setEvent] = useState<Event | null>(null);
+  const [seatTaken, setSeatTaken] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -40,7 +41,9 @@ export function ReservePage() {
     setLoading(true);
     getEvent(eventId)
       .then((result) => {
-        if (alive) setEvent(result.event);
+        if (!alive) return;
+        setEvent(result.event);
+        setSeatTaken(result.takenSeats.includes(seatId));
       })
       .catch((caught) => {
         if (alive) setLoadError(describeApiError(caught));
@@ -52,7 +55,7 @@ export function ReservePage() {
     return () => {
       alive = false;
     };
-  }, [eventId]);
+  }, [eventId, seatId]);
 
   if (loading) {
     return (
@@ -96,6 +99,22 @@ export function ReservePage() {
   }
 
   const seatLabel = formatSeatLabel(seat.id);
+
+  if (seatTaken) {
+    return (
+      <div className="page page--narrow">
+        <ErrorPanel
+          title="To miejsce jest już zajęte"
+          message={`${seatLabel} ktoś właśnie trzyma albo kupił. Wybierz inne wolne miejsce na mapie.`}
+          action={
+            <Link className="button button--primary" to={`/events/${event.id}`}>
+              Wróć do mapy wagonu
+            </Link>
+          }
+        />
+      </div>
+    );
+  }
 
   function validate(): FieldErrors {
     const errors: FieldErrors = {};
