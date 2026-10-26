@@ -11,6 +11,7 @@ import { EmptyPanel } from "../components/Feedback";
 import { PurchasePanel } from "../components/PurchasePanel";
 import { RouteStub } from "../components/RouteStub";
 import { ArrowLeft, Clock, Shield } from "../components/Icons";
+import { RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
 import { timeFromIso, trainLabel, weekdayPl } from "../lib/format";
 import { loadReservation, loadTicket } from "../lib/session";
 import { useCountdown, useDocumentTitle } from "../hooks/useCountdown";
@@ -102,7 +103,7 @@ export function ReservationPage() {
         </h1>
         <p className="reservation-lead">
           {expired
-            ? "Rezerwacja wygasła, a miejsce wróciło do puli. Możesz wybrać inne — albo to samo, jeśli wciąż jest wolne."
+            ? `${RESERVATION_EXPIRED_MESSAGE} Możesz wybrać inne — albo to samo, jeśli wciąż jest wolne.`
             : `${formatSeatLabel(reservation.seatId)} czeka na Ciebie na kursie ${reservation.event.relation}.`}
         </p>
         <p className="reservation-date">{formatEventDate(reservation.event.date)}</p>

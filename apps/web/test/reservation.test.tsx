@@ -156,7 +156,7 @@ describe("karta B — licznik", () => {
 
     advance(TWO_MINUTES);
 
-    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
+    expect(await screen.findAllByText(/Rezerwacja wygasła — miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.getByRole("timer").textContent).toBe("00:00");
     expect(purchaseButton()).toBeNull();
     expect((screen.getByRole("button", { name: /Rezerwacja wygasła/ }) as HTMLButtonElement).disabled).toBe(true);
@@ -219,7 +219,7 @@ describe("karta C — przycisk zakupu na ekranie B", () => {
 
     fireEvent.click(purchaseButton()!);
 
-    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
+    expect(await screen.findAllByText(/Rezerwacja wygasła — miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.getByRole("timer").textContent).toBe("00:00");
     expect(screen.queryByText(/czeka na Ciebie/)).toBeNull();
     expect(purchaseButton()).toBeNull();

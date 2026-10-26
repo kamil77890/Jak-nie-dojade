@@ -1,6 +1,7 @@
 import {
   formatDuration,
   formatEventDate,
+  formatSeatLabel,
   type EventDetailResponse,
   type Seat,
 } from "@pas/shared";
@@ -121,7 +122,7 @@ export function EventPage() {
 
   function handleSeatClick(seat: Seat) {
     navigate(`/events/${event.id}/reserve/${seat.id}`, {
-      state: { eventSummary: toSummary(event), seatLabel: seat.id },
+      state: { eventSummary: toSummary(event), seatLabel: formatSeatLabel(seat.id) },
     });
   }
 

@@ -119,7 +119,7 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
 
     advance(TWO_MINUTES);
 
-    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
+    expect(await screen.findAllByText(/Rezerwacja wygasła — miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Kupuję bilet/ })).toBeNull();
     expect(await takenSeats()).toEqual([]);
 
@@ -135,7 +135,7 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     ctx.advance(TWO_MINUTES);
     fireEvent.click(screen.getByRole("button", { name: /Kupuję bilet/ }));
 
-    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
+    expect(await screen.findAllByText(/Rezerwacja wygasła — miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.getByRole("timer").textContent).toBe("00:00");
     expect(screen.queryByLabelText(/^Bilet PAS-/)).toBeNull();
     expect(await takenSeats()).toEqual([]);

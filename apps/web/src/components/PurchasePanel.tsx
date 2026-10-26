@@ -1,7 +1,7 @@
 import type { ReservationView, Ticket } from "@pas/shared";
 import { useState } from "react";
 import { ApiRequestError, purchaseReservation } from "../lib/api";
-import { describeApiError } from "../lib/errors";
+import { describeApiError, RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
 import { saveTicket } from "../lib/session";
 import { AlertTriangle, Mail, Ticket as TicketIcon } from "./Icons";
 
@@ -62,8 +62,8 @@ export function PurchasePanel({
         <div className="expiry-callout" role="alert">
           <AlertTriangle size={22} />
           <div>
-            <h2>Rezerwacja wygasła</h2>
-            <p>Miejsce wróciło do puli. Wybierz inne — albo to samo, jeśli wciąż jest wolne.</p>
+            <h2>{RESERVATION_EXPIRED_MESSAGE}</h2>
+            <p>Wybierz inne miejsce — albo to samo, jeśli wciąż jest wolne.</p>
           </div>
         </div>
       ) : (

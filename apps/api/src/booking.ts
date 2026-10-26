@@ -24,12 +24,6 @@ interface ReservationRow {
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-export interface CreateReservationResult {
-  reservation: Reservation;
-  /** true, gdy to powtórka identycznego requestu i zwracamy istniejącą rezerwację. */
-  duplicate: boolean;
-}
-
 export interface PurchaseResult {
   code: string;
   reservation: Reservation;
@@ -53,10 +47,10 @@ export class BookingService {
   ) {}
 
   /**
-   * Rezerwacja jest idempotentna: ten sam klient (kurs, miejsce, imię i e-mail)
-   * wysyłający request drugi raz dostaje tę samą aktywną rezerwację zamiast 409.
+   * Każde drugie zajęcie miejsca z ważną rezerwacją albo kupionego daje 409 —
+   * także powtórka identycznego requestu (karta B: „drugie zajęcie … daje 409”).
    */
-  createReservation(input: CreateReservationInput): CreateReservationResult {
+  createReservation(input: CreateReservationInput): Reservation {
     if (!this.catalog.getEvent(input.eventId) || !this.catalog.getSeat(input.eventId, input.seatId)) {
       throw new EventOrSeatNotFoundError();
     }
@@ -71,20 +65,13 @@ export class BookingService {
 
       const taken = this.db
         .prepare(
-          `SELECT * FROM reservations
+          `SELECT 1 FROM reservations
            WHERE event_id = ? AND seat_id = ? AND status IN ('active', 'purchased')
            LIMIT 1`,
         )
-        .get(input.eventId, input.seatId) as unknown as ReservationRow | undefined;
+        .get(input.eventId, input.seatId);
 
-      if (taken) {
-        const sameRequest =
-          taken.status === "active" &&
-          taken.customer_name === input.customerName &&
-          taken.email === input.email;
-        if (sameRequest) return { reservation: this.mapRow(taken), duplicate: true };
-        throw new SeatUnavailableError();
-      }
+      if (taken) throw new SeatUnavailableError();
 
       try {
         this.db
@@ -109,17 +96,14 @@ export class BookingService {
       }
 
       return {
-        reservation: {
-          id,
-          eventId: input.eventId,
-          seatId: input.seatId,
-          customerName: input.customerName,
-          email: input.email,
-          createdAt,
-          expiresAt,
-          status: "active",
-        },
-        duplicate: false,
+        id,
+        eventId: input.eventId,
+        seatId: input.seatId,
+        customerName: input.customerName,
+        email: input.email,
+        createdAt,
+        expiresAt,
+        status: "active",
       };
     });
   }

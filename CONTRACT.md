@@ -10,7 +10,7 @@ Wersja 1.0. Kontrakt jest wspólny dla kart A, B i C. Zmiana typu, formatu ident
 | 02 | odmowa zakupu | `409` + `{ "error": "RESERVATION_EXPIRED" }` |
 | 03 | format `seatId` | `"wagon-miejsce"`, np. `"5-12"`; `eventId` i `seatId` są tekstem |
 | 04 | TTL | jedno źródło: `RESERVATION_TTL_MINUTES` (domyślnie 15), w testach/demo `RESERVATION_TTL_SECONDS` (ma pierwszeństwo); tryb testowy prowadzącego: `RESERVATION_TTL_MINUTES=2` bez `_SECONDS` |
-| 05 | powtórzona rezerwacja | identyczny request (kurs, miejsce, imię, e-mail) przy aktywnej rezerwacji → `200` z tą samą rezerwacją |
+| 05 | powtórzona rezerwacja | każde drugie zajęcie miejsca z ważną rezerwacją, także identyczny request → `409 SEAT_UNAVAILABLE` |
 
 Dane demo: 3 kursy, każdy z wagonami **5** i **6**, po **20 miejsc** (1–20). Siatka wagonu to 5 rzędów × 4 miejsca. Pozycja wynika z numeru: 1 i 4 przy oknie, 2 i 3 przy korytarzu.
 
@@ -135,7 +135,7 @@ Walidacja: `eventId` i `seatId` niepuste stringi, `customerName` 2–80 znaków 
 }
 ```
 
-`200` — powtórka identycznego requestu: ten sam `eventId`, `seatId`, `customerName` i `email` (po `trim`, e-mail bez rozróżniania wielkości liter), a wcześniejsza rezerwacja jest nadal aktywna. Odpowiedź ma ten sam kształt i te same `reservationId` oraz `expiresAt`; nowa rezerwacja nie powstaje, a TTL się nie przedłuża. Dotyczy to też dwóch równoległych requestów. Inna osoba na tym samym miejscu dostaje `409`.
+Rezerwacja nie jest idempotentna: drugie zajęcie tego samego miejsca daje `409 SEAT_UNAVAILABLE`, także gdy to powtórka identycznego requestu (ten sam `eventId`, `seatId`, `customerName` i `email`) albo dwa równoległe requesty. Pierwsza rezerwacja zostaje bez zmian, a TTL się nie przedłuża.
 
 Odmowy:
 

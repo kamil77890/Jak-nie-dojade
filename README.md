@@ -112,12 +112,12 @@ Mapowanie praktyk na kod i scenariusze: [`docs/PRACTICES.md`](./docs/PRACTICES.m
 | --- | --- | --- | --- |
 | `GET` | `/api/events` | `200 EventSummary[]` | — |
 | `GET` | `/api/events/:id` | `200 { event, takenSeats }` | `404 EVENT_NOT_FOUND` |
-| `POST` | `/api/reservations` | `201 { reservationId, expiresAt }`; powtórka identycznej → `200`, ta sama rezerwacja | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
+| `POST` | `/api/reservations` | `201 { reservationId, expiresAt }` | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
 | `POST` | `/api/reservations/:id/purchase` | `200 { code }` | `404`, `409 RESERVATION_EXPIRED` |
 
 Wszystkie błędy mają envelope `{ error: string }`; status HTTP niesie znaczenie.
 
-- Rezerwacja jest idempotentna: powtórzony identyczny request (ten sam kurs, miejsce, imię i e-mail, rezerwacja jeszcze aktywna) zwraca `200` z tą samą rezerwacją (`reservationId`, `expiresAt`) zamiast `409`. Dotyczy to też dwóch równoległych requestów.
+- Drugie zajęcie tego samego miejsca daje `409 SEAT_UNAVAILABLE` — także powtórka identycznego requestu i dwa równoległe requesty. Pierwsza rezerwacja zostaje bez zmian.
 - Zakup jest idempotentny: drugi request zwraca ten sam kod i nie tworzy drugiego joba. Zakup nie ma body; `Content-Type: application/json` z pustym body też jest akceptowany.
 
 Dodatkowo, poza kontraktem:

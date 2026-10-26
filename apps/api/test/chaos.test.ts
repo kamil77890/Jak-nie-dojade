@@ -50,7 +50,7 @@ describe("test chaosu — limit rezerwacji przy szybkim przebiegu z jednego IP",
     statuses.push((await reserve(ctx, b1)).statusCode, (await reserve(ctx, b1)).statusCode);
     const parallelB1 = await Promise.all([reserve(ctx, b1), reserve(ctx, b1)]);
     statuses.push(...parallelB1.map((response) => response.statusCode));
-    expect(statuses).toEqual([201, 200, 200, 200]);
+    expect(statuses).toEqual([201, 409, 409, 409]);
 
     // B2: 20 równoczesnych rezerwacji jednego miejsca — dokładnie jedna 2xx.
     const b2 = await Promise.all(
