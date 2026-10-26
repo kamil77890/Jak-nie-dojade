@@ -161,7 +161,7 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 ## Testy i jakość
 
 ```bash
-pnpm test        # 90 testów: shared, API, worker, resilience, guardy, test chaosu, wdrożenie, UI kart A/B/C, E2E ekranów
+pnpm test        # 92 testy: shared, API, worker, resilience, guardy, test chaosu, wdrożenie, UI kart A/B/C, E2E ekranów
 pnpm typecheck   # TypeScript strict we wszystkich pakietach
 pnpm build       # API + mock-mail + web
 ```
