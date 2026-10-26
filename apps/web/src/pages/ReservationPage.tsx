@@ -1,24 +1,23 @@
-import {
-  formatCountdown,
-  formatEventDate,
-  formatSeatLabel,
-  type ReservationView,
-  type Ticket,
-} from "@pas/shared";
-import { useState } from "react";
+import { formatCountdown, formatSeatLabel, type ReservationView, type Ticket } from "@pas/shared";
+import { useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { EmptyPanel } from "../components/Feedback";
+import { ArrowLeft } from "../components/Icons";
 import { PurchasePanel } from "../components/PurchasePanel";
-import { RouteStub } from "../components/RouteStub";
-import { ArrowLeft, Clock, Shield } from "../components/Icons";
-import { timeFromIso, trainLabel, weekdayPl } from "../lib/format";
+import { TripSummary } from "../components/TripSummary";
+import { timeFromIso } from "../lib/format";
+import { EASE, gsap, useGsap } from "../lib/motion";
 import { loadReservation } from "../lib/session";
 import { useCountdown, useDocumentTitle } from "../hooks/useCountdown";
+
+const RING_RADIUS = 46;
+const RING_LENGTH = 2 * Math.PI * RING_RADIUS;
 
 export function ReservationPage() {
   const { reservationId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const root = useRef<HTMLDivElement>(null);
 
   const [reservation] = useState<ReservationView | null>(() => {
     const state = location.state as { reservation?: ReservationView } | null;
@@ -28,18 +27,27 @@ export function ReservationPage() {
     reservation ? Math.max(1, new Date(reservation.expiresAt).getTime() - Date.now()) : 1,
   );
 
-  useDocumentTitle("Twoja rezerwacja");
   const { remainingMs, expired } = useCountdown(reservation?.expiresAt ?? new Date(0).toISOString());
+  useDocumentTitle(reservation && !expired ? `${formatCountdown(remainingMs)} do końca rezerwacji` : "Rezerwacja");
+
+  useGsap(
+    root,
+    () => {
+      gsap.from(".hold-ring", { scale: 0.86, opacity: 0, duration: 1.4, ease: EASE });
+      gsap.from(".intro", { y: 36, opacity: 0, duration: 1.2, stagger: 0.08, ease: EASE, delay: 0.1 });
+    },
+    [],
+  );
 
   if (!reservation) {
     return (
-      <div className="page page--narrow">
+      <div className="mx-auto max-w-[760px] px-4 py-16 sm:px-8">
         <EmptyPanel
-          title="Ta karta nie pamięta rezerwacji"
-          message="Adres zawiera identyfikator, ale dane rezerwacji trzymamy w sessionStorage tej karty. Wróć do rozkładu i wybierz miejsce jeszcze raz."
+          title="Nie widzimy tej rezerwacji"
+          message="Dane rezerwacji zapisujemy tylko w karcie, w której ją zrobiono. Wróć do odjazdów i wybierz miejsce jeszcze raz."
           action={
-            <Link className="button button--primary" to="/">
-              Wróć do rozkładu
+            <Link className="btn btn-primary" to="/" viewTransition>
+              Wróć do odjazdów
             </Link>
           }
         />
@@ -47,132 +55,76 @@ export function ReservationPage() {
     );
   }
 
-  const urgency = expired ? "is-expired" : remainingMs < 30_000 ? "is-danger" : remainingMs < 120_000 ? "is-warning" : "";
-  const progress = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
+  const urgent = !expired && remainingMs < 60_000;
+  const progress = Math.max(0, Math.min(1, remainingMs / totalMs));
+  const seatLabel = formatSeatLabel(reservation.seatId);
+  const ringColor = expired ? "var(--c-line)" : urgent ? "var(--c-danger)" : "var(--color-accent)";
 
   function handlePurchased(ticket: Ticket) {
-    navigate(`/reservations/${reservationId}/ticket`, { state: { ticket } });
+    navigate(`/reservations/${reservationId}/ticket`, { state: { ticket }, viewTransition: true });
   }
 
   return (
-    <div className="page">
-      <Link className="back-link" to={`/events/${reservation.event.id}`}>
+    <div ref={root} className="mx-auto max-w-[1320px] px-4 pb-24 pt-10 sm:px-8">
+      <Link
+        className="inline-flex items-center gap-2 text-[15px] font-semibold text-muted transition-colors hover:text-ink"
+        to={`/events/${reservation.event.id}`}
+        viewTransition
+      >
         <ArrowLeft size={16} />
-        Mapa wagonu
+        Plan wagonu
       </Link>
 
-      <section className="reservation-hero">
-        <p className="eyebrow">
-          Karta B + C · rezerwacja · {trainLabel(reservation.event.id)} ·{" "}
-          {weekdayPl(reservation.event.date)}
-        </p>
-        <h1>
-          {expired ? (
-            <>
-              Czas <em>minął.</em>
-            </>
-          ) : (
-            <>
-              Miejsce jest <em>Twoje.</em>
-            </>
-          )}
-        </h1>
-        <p className="reservation-lead">
-          {expired
-            ? "Rezerwacja wygasła, a miejsce wróciło do puli. Możesz wybrać inne — albo to samo, jeśli wciąż jest wolne."
-            : `${formatSeatLabel(reservation.seatId)} czeka na Ciebie na kursie ${reservation.event.relation}.`}
-        </p>
-        <p className="reservation-date">{formatEventDate(reservation.event.date)}</p>
-      </section>
+      <div className="mt-8 grid items-start gap-6 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)] lg:gap-8">
+        <section className="card flex flex-col items-center px-6 py-10 text-center sm:px-10 sm:py-14" aria-labelledby="hold-title">
+          <h1 id="hold-title" className={`intro text-[clamp(24px,2.6vw,32px)] font-bold leading-tight condensed ${expired ? "text-danger" : ""}`}>
+            {expired ? "Rezerwacja wygasła" : `${seatLabel} czeka na Ciebie`}
+          </h1>
 
-      <div className="reservation-layout">
-        <div className="reservation-main">
-          <section className={`hold-card ${urgency}`} aria-label="Licznik rezerwacji">
-            <div className="hold-top">
-              <span className="hold-label">
-                <Clock size={15} />
-                {expired ? "Rezerwacja wygasła" : "Miejsce trzymane jeszcze"}
-              </span>
-              <span className={`live-pill ${expired ? "live-pill--off" : ""}`}>
-                <span aria-hidden="true" />
-                {expired ? "po czasie" : "na żywo"}
-              </span>
-            </div>
-
-            <div className="hold-timer" role="timer" aria-live="off">
-              {formatCountdown(remainingMs)}
-            </div>
-
-            <div className="hold-bar" aria-hidden="true">
-              <span style={{ width: `${progress}%` }} />
-            </div>
-
-            <div className="hold-foot">
-              <span>Ważne do {timeFromIso(reservation.expiresAt)}</span>
-              <span>{expired ? "miejsce wróciło do puli" : "termin pilnuje serwer"}</span>
-            </div>
-          </section>
-
-          {expired ? (
-            <p className="expiry-banner" role="alert">
-              <Shield size={18} />
-              Po czasie nie wydamy biletu. Wybierz miejsce jeszcze raz — to samo może być już wolne.
-            </p>
-          ) : null}
-
-          <RouteStub
-            event={reservation.event}
-            seatId={reservation.seatId}
-            passenger={reservation.customerName}
-            label="Rezerwacja"
-          />
-
-          <section className="reservation-details">
-            <p className="eyebrow">Szczegóły</p>
-            <dl>
+          <div className="hold-ring relative mt-8 aspect-square w-full max-w-[400px]">
+            <svg viewBox="0 0 100 100" className="size-full -rotate-90" aria-hidden="true">
+              <circle cx="50" cy="50" r={RING_RADIUS} fill="none" stroke="var(--c-raised)" strokeWidth="3" />
+              <circle
+                cx="50"
+                cy="50"
+                r={RING_RADIUS}
+                fill="none"
+                stroke={ringColor}
+                strokeWidth="3"
+                strokeLinecap="round"
+                strokeDasharray={RING_LENGTH}
+                strokeDashoffset={RING_LENGTH * (1 - progress)}
+                style={{ transition: "stroke-dashoffset 250ms linear, stroke 600ms ease" }}
+              />
+            </svg>
+            <div className="absolute inset-0 grid place-items-center">
               <div>
-                <dt>Podróżny</dt>
-                <dd>{reservation.customerName}</dd>
+                <div
+                  className={`text-[clamp(84px,11vw,140px)] font-extrabold leading-none tracking-[-0.02em] narrow ${
+                    expired ? "text-muted/50" : urgent ? "text-danger" : ""
+                  }`}
+                  role="timer"
+                  aria-live="off"
+                  aria-label="Pozostały czas"
+                >
+                  {formatCountdown(remainingMs)}
+                </div>
+                <p className="mt-2 text-[15px] text-muted">{expired ? "po czasie" : "zostało"}</p>
               </div>
-              <div>
-                <dt>E-mail</dt>
-                <dd>{reservation.email}</dd>
-              </div>
-              <div>
-                <dt>Miejsce</dt>
-                <dd>{formatSeatLabel(reservation.seatId)}</dd>
-              </div>
-              <div>
-                <dt>Rezerwacja</dt>
-                <dd className="mono">{reservation.reservationId.slice(0, 8)}…</dd>
-              </div>
-            </dl>
-            <p className="details-note">
-              Bilet jest ważny na całą trasę. Możesz zamknąć tę kartę i wrócić z historii — dane
-              rezerwacji zostają w tej sesji przeglądarki.
-            </p>
-          </section>
-        </div>
+            </div>
+          </div>
 
-        <div className="reservation-aside">
-          <PurchasePanel
-            reservation={reservation}
-            expired={expired}
-            onPurchased={handlePurchased}
-          />
+          <p className="intro mt-8 max-w-[40ch] text-[16px] text-muted">
+            {expired
+              ? "Miejsce wróciło do puli. Wybierz je ponownie, jeśli nadal jest wolne."
+              : `Trzymamy miejsce do ${timeFromIso(reservation.expiresAt)}. Potem wraca do sprzedaży.`}
+          </p>
+        </section>
 
-          <section className="aside-card">
-            <p className="eyebrow">Zasada serwera</p>
-            <h2>Licznik to tylko podpowiedź</h2>
-            <p>
-              Przeglądarka pokazuje, ile zostało. O ważności decyduje API: zakup po czasie dostaje
-              409 i nie wydaje biletu.
-            </p>
-            <Link className="text-link" to="/lab">
-              Podejrzyj kolejkę i bezpiecznik
-              <span aria-hidden="true">↗</span>
-            </Link>
-          </section>
+        <div className="intro card space-y-8 p-7 sm:p-10">
+          <PurchasePanel reservation={reservation} expired={expired} onPurchased={handlePurchased} />
+          <TripSummary event={reservation.event} seatId={reservation.seatId} passenger={reservation.customerName} />
+          <p className="text-[15px] text-muted">Potwierdzenie wyślemy na {reservation.email}.</p>
         </div>
       </div>
     </div>

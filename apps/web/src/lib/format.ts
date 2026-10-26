@@ -1,42 +1,20 @@
 import type { Event, EventSummary } from "@pas/shared";
 
-const MONTHS_SHORT = [
-  "sty",
-  "lut",
-  "mar",
-  "kwi",
-  "maj",
-  "cze",
-  "lip",
-  "sie",
-  "wrz",
-  "paź",
-  "lis",
-  "gru",
-] as const;
-
 export function trainLabel(eventId: string): string {
   const [operator, number] = eventId.split("-");
   if (!operator || !number) return "Pociąg";
   return `${operator.toUpperCase()} ${number}`;
 }
 
+/** "Warszawa Wschodnia → Kraków Główny" → stacja początkowa i docelowa. */
+export function splitRelation(relation: string): { from: string; to: string } {
+  const [from = relation, to = ""] = relation.split(/\s*→\s*/);
+  return { from, to };
+}
+
 export function weekdayPl(isoDate: string): string {
   const date = new Date(`${isoDate}T12:00:00Z`);
   return new Intl.DateTimeFormat("pl-PL", { weekday: "long", timeZone: "UTC" }).format(date);
-}
-
-export function monthShortPl(isoDate: string): string {
-  const month = Number(isoDate.slice(5, 7));
-  return MONTHS_SHORT[month - 1] ?? "";
-}
-
-export function dayOfMonth(isoDate: string): string {
-  return isoDate.slice(8, 10);
-}
-
-export function yearOfDate(isoDate: string): string {
-  return isoDate.slice(0, 4);
 }
 
 export function timeFromIso(iso: string): string {
@@ -57,6 +35,17 @@ export function toSummary(event: Event): EventSummary {
 
 export function seatsInWagonLabel(count: number): string {
   if (count === 1) return "1 miejsce";
-  if (count >= 2 && count <= 4) return `${count} miejsca`;
+  const lastDigit = count % 10;
+  const lastTwo = count % 100;
+  if (lastDigit >= 2 && lastDigit <= 4 && (lastTwo < 12 || lastTwo > 14)) return `${count} miejsca`;
   return `${count} miejsc`;
+}
+
+/** Odmiana bez liczby: "wolne miejsce", "wolne miejsca", "wolnych miejsc". */
+export function freeSeatsWord(count: number): string {
+  if (count === 1) return "wolne miejsce";
+  const lastDigit = count % 10;
+  const lastTwo = count % 100;
+  if (lastDigit >= 2 && lastDigit <= 4 && (lastTwo < 12 || lastTwo > 14)) return "wolne miejsca";
+  return "wolnych miejsc";
 }
