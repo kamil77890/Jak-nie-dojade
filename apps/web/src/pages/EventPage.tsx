@@ -12,7 +12,7 @@ import { ArrowLeft, ArrowUpRight, Clock, Refresh, Seat as SeatIcon, Shield } fro
 import { SeatMap } from "../components/SeatMap";
 import { getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
-import { seatsInWagonLabel, toSummary, trainLabel, weekdayPl } from "../lib/format";
+import { seatsInWagonLabel, toSummary, trainLabel, wagonsLabel, weekdayPl } from "../lib/format";
 import { formatTtl, useReservationTtl } from "../lib/ttl";
 import { useDocumentTitle } from "../hooks/useCountdown";
 
@@ -167,7 +167,7 @@ export function EventPage() {
             <SeatIcon size={15} />
             {totalFree} z {totalSeats} miejsc wolnych
           </span>
-          <span>2 wagony · miejsca numerowane</span>
+          <span>{wagonsLabel(event.wagons.length)} · miejsca numerowane</span>
           <span>Bilet na całą trasę</span>
         </div>
       </section>

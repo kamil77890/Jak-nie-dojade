@@ -31,6 +31,13 @@ export interface Event {
 
 export type EventSummary = Omit<Event, "wagons">;
 
+/** Pozycja `GET /api/events`: summary + pojemność i wolne miejsca z tego samego store'u co takenSeats. */
+export interface EventListItem extends EventSummary {
+  wagonCount: number;
+  seatCount: number;
+  freeSeats: number;
+}
+
 export type ReservationStatus = "active" | "purchased" | "expired";
 
 export interface Reservation {

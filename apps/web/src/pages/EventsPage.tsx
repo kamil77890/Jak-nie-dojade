@@ -1,9 +1,4 @@
-import {
-  DEMO_SEAT_COUNT,
-  formatDuration,
-  formatEventDate,
-  type EventSummary,
-} from "@pas/shared";
+import { formatDuration, formatEventDate, type EventListItem } from "@pas/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { EmptyPanel, ErrorPanel } from "../components/Feedback";
@@ -11,9 +6,13 @@ import { ArrowUpRight, Clock, Shield, Spark, Ticket } from "../components/Icons"
 import { getEvents } from "../lib/api";
 import { describeApiError } from "../lib/errors";
 import {
+  connectionsLabel,
   dayOfMonth,
+  freeSeatsLabel,
   monthShortPl,
+  seatsLabel,
   trainLabel,
+  wagonsLabel,
   weekdayPl,
   yearOfDate,
 } from "../lib/format";
@@ -23,7 +22,7 @@ import { useDocumentTitle } from "../hooks/useCountdown";
 export function EventsPage() {
   useDocumentTitle("Rozkład jazdy");
   const ttl = formatTtl(useReservationTtl());
-  const [events, setEvents] = useState<EventSummary[] | null>(null);
+  const [events, setEvents] = useState<EventListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -109,7 +108,11 @@ export function EventsPage() {
             <h2 id="schedule-title">Najbliższe kursy</h2>
           </div>
           <p className="section-meta">
-            {events ? `${events.length} połączenia · ${DEMO_SEAT_COUNT} miejsc` : "Ładujemy rozkład"}
+            {events
+              ? `${connectionsLabel(events.length)} · ${seatsLabel(
+                  events.reduce((count, event) => count + event.seatCount, 0),
+                )}`
+              : "Ładujemy rozkład"}
           </p>
         </div>
 
@@ -177,9 +180,15 @@ export function EventsPage() {
                 </div>
 
                 <div className="event-meta">
-                  <span>2 wagony</span>
-                  <span>40 miejsc</span>
-                  <span className="event-meta-highlight">wolne</span>
+                  <span>{wagonsLabel(event.wagonCount)}</span>
+                  <span>{seatsLabel(event.seatCount)}</span>
+                  <span
+                    className={`event-meta-highlight ${
+                      event.freeSeats > 0 ? "" : "event-meta-highlight--sold-out"
+                    }`}
+                  >
+                    {freeSeatsLabel(event.freeSeats)}
+                  </span>
                 </div>
 
                 <span className="event-arrow" aria-hidden="true">

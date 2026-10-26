@@ -915,6 +915,11 @@ svg {
   font-size: 0.54rem;
 }
 
+.event-meta-highlight--sold-out {
+  background: rgba(25, 35, 31, 0.06);
+  color: var(--muted);
+}
+
 .event-arrow {
   display: grid;
   place-items: center;

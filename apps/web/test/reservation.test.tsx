@@ -55,6 +55,25 @@ function view(overrides: Partial<ReservationView> = {}): ReservationView {
 const reservePath = `/events/${event.id}/reserve/5-12`;
 const purchaseButton = () => screen.queryByRole("button", { name: /Kupuję bilet/ });
 
+describe("karta A — lista kursów", () => {
+  it("wagony, miejsca i wolne miejsca bierze z API; pełny kurs jest „wyprzedane”", async () => {
+    stubApi((_method, path) =>
+      path === "/api/events"
+        ? json(200, [
+            { ...EVENT_SUMMARIES[0]!, wagonCount: 3, seatCount: 60, freeSeats: 22 },
+            { ...EVENT_SUMMARIES[1]!, wagonCount: 1, seatCount: 20, freeSeats: 0 },
+          ])
+        : json(404, { error: "NOT_FOUND" }),
+    );
+    const { container } = renderAt("/");
+
+    await screen.findByText("22 wolne");
+    const metas = [...container.querySelectorAll(".event-meta")].map((meta) => meta.textContent);
+    expect(metas).toEqual(["3 wagony60 miejsc22 wolne", "1 wagon20 miejscwyprzedane"]);
+    expect(container.querySelector(".section-meta")?.textContent).toBe("2 połączenia · 80 miejsc");
+  });
+});
+
 describe("karta B — formularz rezerwacji", () => {
   it("pokazuje dokładnie „Wagon 5, miejsce 12” i TTL z serwera", async () => {
     stubApi((method, path) => (path === `/api/events/${event.id}` ? eventDetail() : json(404, {})));

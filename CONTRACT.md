@@ -76,10 +76,15 @@ Status HTTP niesie znaczenie; sukces nigdy nie zwraca `error`.
     "relation": "Warszawa Wschodnia → Kraków Główny",
     "date": "2026-11-21",
     "departureTime": "08:10",
-    "arrivalTime": "10:55"
+    "arrivalTime": "10:55",
+    "wagonCount": 2,
+    "seatCount": 40,
+    "freeSeats": 38
   }
 ]
 ```
+
+`wagonCount`, `seatCount` i `freeSeats` to pola dodatkowe dla listy kursów (typ `EventListItem`). `freeSeats` liczy się z tego samego store'u co `takenSeats`: kupione i ważne rezerwacje są zajęte, wygasłe nie.
 
 ### `GET /api/events/:id`
 

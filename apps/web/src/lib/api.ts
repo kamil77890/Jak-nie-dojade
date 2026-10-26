@@ -2,7 +2,7 @@ import type {
   CreateReservationInput,
   CreateReservationResponse,
   EventDetailResponse,
-  EventSummary,
+  EventListItem,
   JobView,
   MailMessageView,
   OpsSnapshot,
@@ -63,8 +63,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function getEvents(): Promise<EventSummary[]> {
-  return request<EventSummary[]>("/api/events");
+export function getEvents(): Promise<EventListItem[]> {
+  return request<EventListItem[]>("/api/events");
 }
 
 export function getEvent(eventId: string): Promise<EventDetailResponse> {
