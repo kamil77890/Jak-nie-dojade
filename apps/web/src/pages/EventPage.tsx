@@ -7,13 +7,13 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
-import { ArrowLeft, Refresh } from "../components/Icons";
+import { ArrowLeft, ArrowUpRight, Clock, Refresh, Seat as SeatIcon, Shield } from "../components/Icons";
 import { SeatMap } from "../components/SeatMap";
 import { getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
-import { freeSeatsWord, splitRelation, toSummary, trainLabel, weekdayPl } from "../lib/format";
+import { seatsInWagonLabel, toSummary, trainLabel, weekdayPl } from "../lib/format";
+import { formatTtl, useReservationTtl } from "../lib/ttl";
 import { useDocumentTitle } from "../hooks/useCountdown";
-import { EASE, gsap, useGsap } from "../lib/motion";
 
 export function EventPage() {
   const { eventId = "" } = useParams();
@@ -28,17 +28,9 @@ export function EventPage() {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [wagonId, setWagonId] = useState<string | null>(null);
   const lastLocationKey = useRef(location.key);
-  const root = useRef<HTMLDivElement>(null);
 
   useDocumentTitle(data ? data.event.relation : "Kurs");
-
-  useGsap(
-    root,
-    () => {
-      gsap.from(".intro", { y: 36, opacity: 0, duration: 1.2, stagger: 0.08, ease: EASE });
-    },
-    [Boolean(data)],
-  );
+  const ttl = formatTtl(useReservationTtl());
 
   const load = useCallback(
     async (mode: "initial" | "refresh") => {
@@ -95,22 +87,22 @@ export function EventPage() {
 
   if (loading && !data) {
     return (
-      <div className="mx-auto max-w-[1320px] px-4 sm:px-8">
-        <LoadingBlock label="Wczytujemy plan wagonów…" />
+      <div className="page">
+        <LoadingBlock label="Ustawiamy peron i sprawdzamy miejsca…" />
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div className="mx-auto max-w-[760px] px-4 py-16 sm:px-8">
+      <div className="page page--narrow">
         <ErrorPanel
-          title="Nie udało się wczytać kursu"
-          message={error ?? "Tego kursu nie ma w rozkładzie."}
+          title="Ten kurs nie wyjechał"
+          message={error ?? "Nie znaleźliśmy tego kursu w rozkładzie."}
           onRetry={() => void load("initial")}
           action={
-            <Link className="btn btn-ghost" to="/" viewTransition>
-              Wróć do odjazdów
+            <Link className="button button--ghost" to="/">
+              Wróć do rozkładu
             </Link>
           }
         />
@@ -119,54 +111,68 @@ export function EventPage() {
   }
 
   const { event, takenSeats } = data;
-  const { from, to } = splitRelation(event.relation);
   const taken = new Set(takenSeats);
   const wagon = event.wagons.find((item) => item.id === wagonId) ?? event.wagons[0];
+  const totalSeats = event.wagons.reduce((count, item) => count + item.seats.length, 0);
+  const totalFree = event.wagons.reduce(
+    (count, item) => count + item.seats.filter((seat) => !taken.has(seat.id)).length,
+    0,
+  );
 
   function handleSeatClick(seat: Seat) {
     navigate(`/events/${event.id}/reserve/${seat.id}`, {
       state: { eventSummary: toSummary(event), seatLabel: seat.id },
-      viewTransition: true,
     });
   }
 
   return (
-    <div ref={root} className="mx-auto max-w-[1320px] px-4 pb-24 pt-10 sm:px-8">
-      <Link className="inline-flex items-center gap-2 text-[15px] font-semibold text-muted transition-colors hover:text-ink" to="/" viewTransition>
-        <ArrowLeft size={16} />
-        Odjazdy
-      </Link>
+    <div className="page">
+      <section className="course-hero">
+        <Link className="back-link" to="/">
+          <ArrowLeft size={16} />
+          Rozkład jazdy
+        </Link>
 
-      <header className="mt-8 grid gap-8 border-b border-line pb-10 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
-        <div>
-          <p className="intro flex flex-wrap items-center gap-3 text-[15px] text-muted">
-            <span className="train-badge">{trainLabel(event.id)}</span>
-            <span>
-              {weekdayPl(event.date)}, {formatEventDate(event.date)}
+        <div className="course-hero-grid">
+          <div className="course-title">
+            <p className="eyebrow">
+              Karta A · {trainLabel(event.id)} · {weekdayPl(event.date)}
+            </p>
+            <h1>{event.relation}</h1>
+            <p className="course-sub">{formatEventDate(event.date)}</p>
+          </div>
+
+          <div className="course-times" aria-label="Godziny kursu">
+            <div>
+              <span>Odjazd</span>
+              <strong>{event.departureTime}</strong>
+            </div>
+            <span className="course-rail" aria-hidden="true">
+              <span />
             </span>
-          </p>
-
-          <h1 className="mt-6 grid gap-1" aria-label={`${event.relation}, odjazd ${event.departureTime}, przyjazd ${event.arrivalTime}`}>
-            {[
-              [event.departureTime, from],
-              [event.arrivalTime, to],
-            ].map(([time, station]) => (
-              <span key={time} className="intro grid items-baseline gap-x-6 sm:grid-cols-[minmax(170px,auto)_minmax(0,1fr)]">
-                <span className="text-[clamp(56px,8vw,104px)] font-extrabold leading-[0.95] narrow">{time}</span>
-                <span className="text-[clamp(26px,3.6vw,46px)] font-bold leading-tight condensed">{station}</span>
-              </span>
-            ))}
-          </h1>
+            <div>
+              <span>Przyjazd</span>
+              <strong>{event.arrivalTime}</strong>
+            </div>
+            <span className="course-duration">
+              <Clock size={14} />
+              {formatDuration(event.departureTime, event.arrivalTime)}
+            </span>
+          </div>
         </div>
 
-        <p className="intro text-[16px] text-muted lg:text-right">
-          W podróży {formatDuration(event.departureTime, event.arrivalTime)}.
-          <br className="hidden lg:block" /> Bilet na całą trasę.
-        </p>
-      </header>
+        <div className="course-facts">
+          <span>
+            <SeatIcon size={15} />
+            {totalFree} z {totalSeats} miejsc wolnych
+          </span>
+          <span>2 wagony · miejsca numerowane</span>
+          <span>Bilet na całą trasę</span>
+        </div>
+      </section>
 
-      <div className="mt-10 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex flex-wrap gap-2 rounded-full border border-line bg-surface p-1.5" role="tablist" aria-label="Wybierz wagon">
+      <div className="map-toolbar">
+        <div className="wagon-switch" role="tablist" aria-label="Wybierz wagon">
           {event.wagons.map((item) => {
             const free = item.seats.filter((seat) => !taken.has(seat.id)).length;
             const active = item.id === wagon?.id;
@@ -176,47 +182,36 @@ export function EventPage() {
                 type="button"
                 role="tab"
                 aria-selected={active}
-                className={`flex items-center gap-3 rounded-full py-1.5 pl-1.5 pr-5 text-left transition-colors duration-300 ${
-                  active ? "bg-ink text-bg" : "hover:bg-raised"
-                }`}
+                className={`wagon-tab ${active ? "is-active" : ""}`}
                 onClick={() => setWagonId(item.id)}
               >
-                <span
-                  className={`grid size-10 place-items-center rounded-full text-[22px] font-extrabold narrow ${
-                    active ? "bg-accent text-black" : "bg-raised"
-                  }`}
-                >
-                  {item.number}
-                </span>
-                <span className="flex flex-col leading-tight">
-                  <span className="text-[15px] font-semibold">Wagon {item.number}</span>
-                  <small className={`text-[13px] ${active ? "text-bg/70" : "text-muted"}`}>
-                    {free} {freeSeatsWord(free)}
-                  </small>
-                </span>
+                <span>Wagon {item.number}</span>
+                <small>
+                  {free} / {item.seats.length} wolnych
+                </small>
               </button>
             );
           })}
         </div>
 
-        <div className="flex items-center gap-3">
-          <span className="text-[14px] text-muted">
+        <div className="refresh-box">
+          <span className="refresh-stamp">
             {lastUpdated
-              ? `Stan z ${new Date(lastUpdated).toLocaleTimeString("pl-PL", {
+              ? `Zaktualizowano ${new Date(lastUpdated).toLocaleTimeString("pl-PL", {
                   hour: "2-digit",
                   minute: "2-digit",
                   second: "2-digit",
                 })}`
-              : ""}
+              : "Świeże dane z serwera"}
           </span>
           <button
             type="button"
-            className="btn btn-ghost min-h-10 px-4 text-[14px]"
+            className="button button--ghost button--small"
             onClick={() => void load("refresh")}
             disabled={refreshing}
             aria-busy={refreshing}
           >
-            <Refresh size={15} className={refreshing ? "animate-spin" : ""} />
+            <Refresh size={15} className={refreshing ? "spin" : ""} />
             Odśwież
           </button>
         </div>
@@ -224,18 +219,62 @@ export function EventPage() {
 
       {refreshError ? (
         <InlineAlert tone="warning">
-          Nie udało się odświeżyć planu: {refreshError} Widzisz ostatni znany stan.
+          Nie udało się odświeżyć mapy: {refreshError} Pokazujemy ostatni znany stan.
         </InlineAlert>
       ) : null}
 
-      <div className="mt-6">
-        {wagon ? <SeatMap wagon={wagon} takenSeats={taken} onSeatClick={handleSeatClick} /> : null}
-      </div>
+      <div className="map-layout">
+        {wagon ? (
+          <SeatMap
+            wagon={wagon}
+            takenSeats={taken}
+            onSeatClick={handleSeatClick}
+          />
+        ) : null}
 
-      <p className="mt-6 max-w-[64ch] text-[15px] text-muted">
-        Kliknij wolne miejsce, żeby je zarezerwować. Zakreskowane miejsca są już kupione albo ktoś
-        właśnie je trzyma. Plan odświeża się sam, gdy wracasz na tę kartę.
-      </p>
+        <aside className="map-aside">
+          <section className="aside-card aside-card--accent">
+            <p className="eyebrow">Wybór miejsca</p>
+            <h2>Kliknij wolne miejsce</h2>
+            <p>
+              Otworzy się formularz z numerem miejsca. Rezerwacja trzyma je {ttl} — potem wraca do
+              puli.
+            </p>
+            <ul className="aside-list">
+              <li>
+                <span className="ascii-seat" aria-hidden="true" />
+                Pasek przy krawędzi oznacza miejsce przy oknie.
+              </li>
+              <li>
+                <span className="ascii-seat ascii-seat--taken" aria-hidden="true" />
+                Wyszarzone miejsce jest kupione albo właśnie trzymane.
+              </li>
+              <li>
+                <Refresh size={16} />
+                Mapa odświeża się po powrocie z formularza i na focus.
+              </li>
+            </ul>
+            <p className="aside-footnote">{seatsInWagonLabel(wagon?.seats.length ?? 20)} w wagonie</p>
+          </section>
+
+          <section className="aside-card">
+            <p className="eyebrow">Bezpieczniki w tle</p>
+            <h2>Kasa nie padnie przez e-mail</h2>
+            <p>
+              Zakup i kod biletu są lokalne. Potwierdzenie idzie do kolejki, a dostawca poczty ma
+              timeout, retry i bezpiecznik.
+            </p>
+            <Link className="text-link" to="/lab">
+              Zobacz laboratorium
+              <ArrowUpRight size={15} />
+            </Link>
+            <p className="aside-footnote">
+              <Shield size={14} />
+              E04 · E05 · E06
+            </p>
+          </section>
+        </aside>
+      </div>
     </div>
   );
 }

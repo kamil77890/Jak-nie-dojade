@@ -5,7 +5,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { describe, expect, it, vi } from "vitest";
 import { App } from "../src/App";
-import { saveReservation } from "../src/lib/session";
+import { saveReservation, saveTicket } from "../src/lib/session";
 
 installDom();
 
@@ -53,15 +53,17 @@ function view(overrides: Partial<ReservationView> = {}): ReservationView {
 }
 
 const reservePath = `/events/${event.id}/reserve/5-12`;
+const purchaseButton = () => screen.queryByRole("button", { name: /Kupuję bilet/ });
 
 describe("karta B — formularz rezerwacji", () => {
   it("pokazuje dokładnie „Wagon 5, miejsce 12” i TTL z serwera", async () => {
     stubApi((method, path) => (path === `/api/events/${event.id}` ? eventDetail() : json(404, {})));
-    renderAt(reservePath);
+    const { container } = renderAt(reservePath);
 
-    expect(await screen.findByText("Wagon 5, miejsce 12")).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "Rezerwuję na 2 minuty" })).toBeTruthy();
-    expect(screen.getByText(/Przez 2 minuty nikt inny/)).toBeTruthy();
+    await screen.findByLabelText("Imię i nazwisko");
+    expect(container.querySelector(".form-card-seat")?.textContent).toBe("Wagon 5, miejsce 12");
+    expect(await screen.findByRole("button", { name: /Rezerwuję na 2 minuty/ })).toBeTruthy();
+    expect(screen.getByText(/Rezerwacja jest ważna 2 minuty/)).toBeTruthy();
   });
 
   it("waliduje imię i e-mail bez wysyłania requestu", async () => {
@@ -71,11 +73,11 @@ describe("karta B — formularz rezerwacji", () => {
     renderAt(reservePath);
 
     fireEvent.change(await screen.findByLabelText("Imię i nazwisko"), { target: { value: "A" } });
-    fireEvent.change(screen.getByLabelText("E-mail"), { target: { value: "anna@" } });
+    fireEvent.change(screen.getByLabelText("Adres e-mail"), { target: { value: "anna@" } });
     fireEvent.click(screen.getByRole("button", { name: /Rezerwuję na/ }));
 
-    expect(await screen.findByText("Wpisz imię i nazwisko, co najmniej 2 znaki.")).toBeTruthy();
-    expect(screen.getByText("Wpisz adres e-mail w formie anna@example.com.")).toBeTruthy();
+    expect(await screen.findByText("Podaj imię i nazwisko — co najmniej 2 znaki.")).toBeTruthy();
+    expect(screen.getByText("Podaj poprawny adres e-mail, np. anna@example.com.")).toBeTruthy();
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
@@ -88,7 +90,7 @@ describe("karta B — formularz rezerwacji", () => {
     renderAt(reservePath);
 
     fireEvent.change(await screen.findByLabelText("Imię i nazwisko"), { target: { value: "Anna Kowalska" } });
-    fireEvent.change(screen.getByLabelText("E-mail"), { target: { value: "anna@example.com" } });
+    fireEvent.change(screen.getByLabelText("Adres e-mail"), { target: { value: "anna@example.com" } });
     fireEvent.click(screen.getByRole("button", { name: /Rezerwuję na/ }));
 
     expect(await screen.findByText("Ktoś był szybszy — to miejsce właśnie zniknęło z mapy.")).toBeTruthy();
@@ -116,11 +118,10 @@ describe("karta B — formularz rezerwacji", () => {
     renderAt(reservePath);
 
     fireEvent.change(await screen.findByLabelText("Imię i nazwisko"), { target: { value: " Anna Kowalska " } });
-    fireEvent.change(screen.getByLabelText("E-mail"), { target: { value: "Anna@Example.com" } });
+    fireEvent.change(screen.getByLabelText("Adres e-mail"), { target: { value: "Anna@Example.com" } });
     fireEvent.click(screen.getByRole("button", { name: /Rezerwuję na/ }));
 
-    expect(await screen.findByRole("timer")).toBeTruthy();
-    expect(screen.getByRole("timer").textContent).toBe("02:00");
+    expect((await screen.findByRole("timer")).textContent).toBe("02:00");
     expect(sent).toEqual({
       eventId: event.id,
       seatId: "5-12",
@@ -141,13 +142,13 @@ describe("karta B — licznik", () => {
     renderAt("/reservations/res-1");
 
     expect(screen.getByRole("timer").textContent).toBe("01:32");
-    expect(screen.getByRole("button", { name: /Kupuję bilet/ })).toBeTruthy();
+    expect(purchaseButton()).toBeTruthy();
 
     advance(60_000);
     await waitFor(() => expect(screen.getByRole("timer").textContent).toBe("00:32"));
   });
 
-  it("przy zerze pokazuje wygaśnięcie i chowa przycisk zakupu", async () => {
+  it("przy zerze pokazuje wygaśnięcie i blokuje zakup", async () => {
     const advance = freezeDate(NOW);
     stubApi();
     saveReservation(view());
@@ -155,15 +156,29 @@ describe("karta B — licznik", () => {
 
     advance(TWO_MINUTES);
 
-    expect(await screen.findByText("Rezerwacja wygasła, miejsce wróciło do puli")).toBeTruthy();
+    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.getByRole("timer").textContent).toBe("00:00");
-    expect(screen.queryByRole("button", { name: /Kupuję bilet/ })).toBeNull();
+    expect(purchaseButton()).toBeNull();
+    expect((screen.getByRole("button", { name: /Rezerwacja wygasła/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("bez danych w sessionStorage mówi, że karta nie zna rezerwacji", () => {
     stubApi();
     renderAt("/reservations/nieznana");
-    expect(screen.getByText("Nie widzimy tej rezerwacji")).toBeTruthy();
+    expect(screen.getByText("Ta karta nie pamięta rezerwacji")).toBeTruthy();
+  });
+
+  it("po zakupie (np. „Wstecz” z biletu) nie proponuje ponownego zakupu", () => {
+    freezeDate(NOW);
+    stubApi();
+    saveReservation(view());
+    saveTicket({ ...view(), code: "PAS-7K2M9Q", issuedAt: new Date(NOW).toISOString() });
+    renderAt("/reservations/res-1");
+
+    expect(screen.getByText("Bilet jest już kupiony")).toBeTruthy();
+    expect(screen.getByText(/PAS-7K2M9Q/)).toBeTruthy();
+    expect(purchaseButton()).toBeNull();
+    expect(screen.queryByRole("timer")).toBeNull();
   });
 });
 
@@ -181,7 +196,7 @@ describe("karta C — przycisk zakupu na ekranie B", () => {
     saveReservation(view());
     renderAt("/reservations/res-1");
 
-    const button = screen.getByRole("button", { name: /Kupuję bilet/ }) as HTMLButtonElement;
+    const button = purchaseButton() as HTMLButtonElement;
     fireEvent.click(button);
     await waitFor(() => expect(button.disabled).toBe(true));
     expect(button.textContent).toContain("Wydajemy bilet");
@@ -189,11 +204,10 @@ describe("karta C — przycisk zakupu na ekranie B", () => {
     release(json(200, { code: "PAS-7K2M9Q" }));
 
     const ticket = await screen.findByLabelText("Bilet PAS-7K2M9Q");
-    expect(ticketField(ticket, "Wagon")).toBe("5");
-    expect(ticketField(ticket, "Miejsce")).toMatch(/^12/);
+    expect(ticketField(ticket, "Miejsce")).toBe("Wagon 5, miejsce 12");
   });
 
-  it("409 RESERVATION_EXPIRED pokazuje komunikat i blokuje zakup, mimo że licznik jeszcze trwa", async () => {
+  it("409 RESERVATION_EXPIRED: cały ekran przechodzi w wygaśnięcie, choć licznik jeszcze trwał", async () => {
     freezeDate(NOW);
     stubApi((method, path) =>
       method === "POST" && path === "/api/reservations/res-1/purchase"
@@ -203,10 +217,12 @@ describe("karta C — przycisk zakupu na ekranie B", () => {
     saveReservation(view());
     renderAt("/reservations/res-1");
 
-    fireEvent.click(screen.getByRole("button", { name: /Kupuję bilet/ }));
+    fireEvent.click(purchaseButton()!);
 
-    expect(await screen.findByText("Rezerwacja wygasła, miejsce wróciło do puli")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Kupuję bilet/ })).toBeNull();
+    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
+    expect(screen.getByRole("timer").textContent).toBe("00:00");
+    expect(screen.queryByText(/czeka na Ciebie/)).toBeNull();
+    expect(purchaseButton()).toBeNull();
     expect(window.sessionStorage.getItem("pas.ticket.res-1")).toBeNull();
   });
 });

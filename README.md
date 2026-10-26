@@ -136,7 +136,7 @@ Panel ops można wyłączyć przez `OPS_ENABLED=false`; przy `NODE_ENV=productio
 | E04 | Retry | `apps/api/src/resilience.ts` + `worker.ts` | liczba prób, backoff, ten sam `Idempotency-Key` |
 | E04 | Circuit breaker | `apps/api/src/resilience.ts` | stan `zamknięty / otwarty / półotwarty` |
 | E04 | Fallback i degradacja | `apps/api/src/worker.ts`, kolejka | bilet wydany mimo awarii poczty; e-mail czeka w tle |
-| E05 | Rate limiting | `apps/api/src/app.ts` — token bucket per IP; rezerwacja 60 na start + 2/s, odmowy walidacji (`400`/`404`) oddają żeton | `429` + `Retry-After` |
+| E05 | Rate limiting | `apps/api/src/app.ts` — token bucket per IP; rezerwacja 60 na start + 2/s, odmowy walidacji (`400`/`413`/`415`) oddają żeton | `429` + `Retry-After` |
 | E05 | Load shedding | `apps/api/src/app.ts` — limit in-flight | szybkie `503 OVERLOADED` |
 | E05 | Bulkhead | `apps/api/src/resilience.ts` — osobne pule | odczyt i zapis nie zabierają sobie miejsc |
 | E06 | Kolejka | `apps/api/src/jobs.ts` — tabela `jobs` | gotowe / retry / zrobione / DLQ |
@@ -152,6 +152,7 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 - Domyślnie rezerwacja trzyma miejsce **15 minut** (`RESERVATION_TTL_MINUTES`).
 - Do testów i demo można użyć `RESERVATION_TTL_SECONDS`, np. `RESERVATION_TTL_SECONDS=20 pnpm dev`. Ma pierwszeństwo przed `_MINUTES`; gdy ustawisz obie, API ostrzega w logu startowym.
 - Efektywny TTL i jego źródło są w logu startowym oraz w `GET /api/health` (`reservationTtlSeconds`).
+- Interfejs pokazuje TTL z `GET /api/health`, więc w trybie testowym pisze „2 minuty”, a nie „15 minut”.
 - `expiresAt` jest liczone na serwerze w UTC; przeglądarka tylko je pokazuje.
 - Wygaszanie jest leniwe: każdy odczyt mapy i zakup sprawdza czas. Nie ma crona.
 - Po TTL `takenSeats` nie zawiera miejsca, a zakup zwraca `409 RESERVATION_EXPIRED`.
@@ -159,12 +160,14 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 ## Testy i jakość
 
 ```bash
-pnpm test        # 69 testów: shared, API, worker, resilience, guardy, scenariusze testu chaosu, wdrożenie, web
+pnpm test        # 85 testów: shared, API, worker, resilience, guardy, test chaosu, wdrożenie, UI kart A/B/C, E2E ekranów
 pnpm typecheck   # TypeScript strict we wszystkich pakietach
 pnpm build       # API + mock-mail + web
 ```
 
 Testy API używają wstrzykiwanego zegara, więc wygaśnięcie TTL nie trwa 15 minut. `apps/api/test/chaos.test.ts` odtwarza szybki przebieg testera z jednego IP (B3 → B1 → B2 → kolejne rezerwacje bez `429`), zalew B5 i podrabianie `X-Forwarded-For` przy `TRUST_PROXY=1`. Testy workera pokrywają ack, retry, DLQ i przywracanie joba. Testy resilience pokrywają stany bezpiecznika, token bucket i bulkhead.
+
+Testy web (`apps/web/test`) działają w jsdom. `reservation.test.tsx` sprawdza formularz B (etykieta, walidacja, `409`), licznik (od `expiresAt`, po odświeżeniu, wygaśnięcie, powrót po zakupie) i przycisk C. `e2e.test.tsx` przechodzi ekrany A → B → C na prawdziwym API (Fastify + SQLite w pamięci przez `inject`) przy TTL = 2 min, ze wspólnym zegarem przeglądarki i API: happy path, wygaśnięcie i `409` przy zakupie.
 
 ## Konfiguracja
 
@@ -203,9 +206,9 @@ rm -rf apps/api/data
 
 ## Limit rezerwacji
 
-Limit rezerwacji to token bucket per IP: **60 na start i doładowanie 2 na sekundę**. Do limitu liczą się tylko requesty, które przeszły walidację. `400` i `404` (zły body, nieistniejący kurs lub miejsce) oddają żeton, bo nie dotknęły bazy, a seria złych requestów i tak jest ograniczona limitem globalnym (300 na start + 10/s). `409 SEAT_UNAVAILABLE` żetonu nie oddaje, więc zalew rezerwacji zajętych miejsc też dostaje `429`.
+Limit rezerwacji to token bucket per IP: **60 na start i doładowanie 2 na sekundę**. Do limitu liczą się tylko requesty, które przeszły walidację. Odmowy walidacji (`400`, `413`, `415`: zły body, za duży body, zły `Content-Type`) oddają żeton, bo nie dotknęły bazy, a seria złych requestów i tak jest ograniczona limitem globalnym (300 na start + 10/s). `404` (nieistniejący kurs lub miejsce) i `409 SEAT_UNAVAILABLE` żetonu nie oddają, więc zalew nieistniejących albo zajętych miejsc też dostaje `429`.
 
-- Szybki przebieg testera z jednego IP mieści się w limicie: 14 złych requestów (0 żetonów), 4 powtórki rezerwacji, 20 równoczesnych prób jednego miejsca i ok. 20 kolejnych rezerwacji pod testy zakupu i TTL to ok. 44 z 60 żetonów.
+- Szybki przebieg testera z jednego IP mieści się w limicie: 14 złych requestów (6 × `400` za darmo, 8 × `404` po żetonie), 4 powtórki rezerwacji, 20 równoczesnych prób jednego miejsca i ok. 20 kolejnych rezerwacji pod testy zakupu i TTL to ok. 52 z 60 żetonów.
 - 100 rezerwacji w 10 s z jednego IP: po ok. 60–80 odpowiedziach `2xx`/`409` reszta dostaje `429` z `Retry-After`. Inny klient ma osobny kubełek.
 - Limit zakupów (40 + 2/s) się nie zmienił, a `404` przy zakupie nadal zużywa żeton. Na tym opiera się demo przeciążenia w `/lab`.
 

@@ -1,6 +1,5 @@
 import { formatSeatLabel, type Seat, type Wagon } from "@pas/shared";
-import { useRef } from "react";
-import { EASE, gsap, useGsap } from "../lib/motion";
+import { seatsInWagonLabel } from "../lib/format";
 
 interface SeatMapProps {
   wagon: Wagon;
@@ -8,86 +7,92 @@ interface SeatMapProps {
   onSeatClick: (seat: Seat) => void;
 }
 
-/**
- * Plan wagonu z góry. Na szerokim ekranie rzędy idą w poziomie jak w prawdziwym
- * wagonie (okno u góry i u dołu, korytarz pośrodku), na telefonie — w pionie.
- */
+const ROW_LABELS = ["A", "B", "C", "D", "E"];
+
 export function SeatMap({ wagon, takenSeats, onSeatClick }: SeatMapProps) {
-  const root = useRef<HTMLElement>(null);
   const rows: Seat[][] = [];
   for (let index = 0; index < wagon.seats.length; index += 4) {
     rows.push(wagon.seats.slice(index, index + 4));
   }
 
   const free = wagon.seats.filter((seat) => !takenSeats.has(seat.id)).length;
-
-  // Po zmianie wagonu fotele wjeżdżają rząd po rzędzie.
-  useGsap(
-    root,
-    () => {
-      gsap.from(".seat-row", { y: 18, opacity: 0, duration: 0.9, stagger: 0.06, ease: EASE });
-    },
-    [wagon.id],
-  );
+  const occupied = wagon.seats.length - free;
 
   return (
-    <section ref={root} className="card overflow-hidden p-5 sm:p-10" aria-label={`Plan wagonu ${wagon.number}`}>
-      <p className="mb-12 text-center text-[15px] text-muted" aria-live="polite">
-        <strong className="text-ink">{free}</strong> wolnych, <strong className="text-ink">{wagon.seats.length - free}</strong>{" "}
-        zajętych
-      </p>
+    <section className="train-card" aria-label={`Mapa wagonu ${wagon.number}`}>
+      <div className="train-card-head">
+        <div>
+          <p className="eyebrow">Wnętrze wagonu</p>
+          <h2>Wagon {wagon.number}</h2>
+        </div>
+        <div className="wagon-counts" aria-live="polite">
+          <span>
+            <strong>{free}</strong> wolnych
+          </span>
+          <span className="wagon-counts-divider" aria-hidden="true" />
+          <span>
+            <strong>{occupied}</strong> zajętych
+          </span>
+        </div>
+      </div>
 
-      <div className="wagon-body">
-        <span className="text-[13px] font-semibold text-muted [writing-mode:vertical-rl] max-[720px]:[writing-mode:initial] min-[721px]:rotate-180" aria-hidden="true">
-          kierunek jazdy
-        </span>
+      <div className="wagon-frame">
+        <div className="wagon-nose" aria-hidden="true">
+          <span>← przód pociągu</span>
+          <span className="wagon-door" />
+        </div>
 
         <div className="seat-map" role="group" aria-label={`Miejsca w wagonie ${wagon.number}`}>
           {rows.map((row, rowIndex) => (
             <div className="seat-row" key={row[0]?.id ?? rowIndex}>
+              <span className="row-letter" aria-hidden="true">
+                {ROW_LABELS[rowIndex] ?? ""}
+              </span>
               <div className="seat-pair">
                 {row.slice(0, 2).map((seat) => (
-                  <SeatButton key={seat.id} seat={seat} occupied={takenSeats.has(seat.id)} onSeatClick={onSeatClick} />
+                  <SeatButton
+                    key={seat.id}
+                    seat={seat}
+                    occupied={takenSeats.has(seat.id)}
+                    onSeatClick={onSeatClick}
+                  />
                 ))}
               </div>
               <span className="aisle" aria-hidden="true" />
               <div className="seat-pair">
                 {row.slice(2).map((seat) => (
-                  <SeatButton key={seat.id} seat={seat} occupied={takenSeats.has(seat.id)} onSeatClick={onSeatClick} />
+                  <SeatButton
+                    key={seat.id}
+                    seat={seat}
+                    occupied={takenSeats.has(seat.id)}
+                    onSeatClick={onSeatClick}
+                  />
                 ))}
               </div>
             </div>
           ))}
         </div>
 
-        <span className="w-4 self-stretch border-l-[3px] border-ink/80 max-[720px]:h-3 max-[720px]:w-auto max-[720px]:border-l-0 max-[720px]:border-t-[3px]" aria-hidden="true" />
-      </div>
-
-      <ul className="mt-12 flex flex-wrap justify-center gap-x-7 gap-y-3 text-[14px] text-muted" aria-label="Legenda">
-        <li className="inline-flex items-center gap-2">
-          <span className="h-[18px] w-[22px] rounded-[5px] border-2 border-ink/70 bg-surface" aria-hidden="true" />
-          wolne
-        </li>
-        <li className="inline-flex items-center gap-2">
-          <span
-            className="h-[18px] w-[22px] rounded-[5px] border-2 border-line"
-            style={{ background: "repeating-linear-gradient(135deg, var(--c-raised) 0 3px, transparent 3px 6px)" }}
-            aria-hidden="true"
-          />
-          zajęte
-        </li>
-        <li className="inline-flex items-center gap-2">
-          <span className="h-[5px] w-[22px] rounded-full bg-glass" aria-hidden="true" />
-          przy oknie
-        </li>
-        <li className="inline-flex items-center gap-2">
-          <span className="flex items-center gap-[3px]" aria-hidden="true">
-            <span className="h-[14px] w-[8px] rounded-[3px] border-2 border-ink/50" />
-            <span className="h-[14px] w-[8px] rounded-[3px] border-2 border-ink/50" />
+        <div className="wagon-legend">
+          <span className="legend-item">
+            <span className="legend-seat" aria-hidden="true" />
+            wolne
           </span>
-          przy korytarzu (miejsca 2 i 3 w rzędzie)
-        </li>
-      </ul>
+          <span className="legend-item">
+            <span className="legend-seat legend-seat--occupied" aria-hidden="true" />
+            zajęte
+          </span>
+          <span className="legend-item">
+            <span className="legend-window" aria-hidden="true" />
+            przy oknie
+          </span>
+          <span className="legend-item">
+            <span className="legend-aisle" aria-hidden="true" />
+            przy korytarzu (miejsca 2 i 3 w rzędzie)
+          </span>
+          <span className="legend-note">{seatsInWagonLabel(wagon.seats.length)} w wagonie</span>
+        </div>
+      </div>
     </section>
   );
 }
@@ -107,13 +112,16 @@ function SeatButton({
   return (
     <button
       type="button"
-      className={`seat ${seat.position === "window" ? "seat--window" : "seat--aisle"} ${occupied ? "seat--occupied" : ""}`}
+      className={`seat ${seat.position === "window" ? "seat--window" : ""} ${
+        occupied ? "seat--occupied" : ""
+      }`}
       onClick={() => onSeatClick(seat)}
       disabled={occupied}
       aria-label={label}
-      title={occupied ? `${formatSeatLabel(seat.id)} — zajęte` : formatSeatLabel(seat.id)}
+      title={occupied ? `${formatSeatLabel(seat.id)} — zajęte` : `${formatSeatLabel(seat.id)} — wybierz`}
     >
-      <span>{seat.number}</span>
+      <span className="seat-number">{seat.number}</span>
+      {seat.position === "window" ? <span className="seat-edge" aria-hidden="true" /> : null}
     </button>
   );
 }

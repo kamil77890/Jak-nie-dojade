@@ -81,10 +81,11 @@ async function reserveSeat(seatId: string): Promise<void> {
   fireEvent.click(seatButton(seatId));
 
   // Karta B: formularz z etykietą miejsca i TTL z serwera.
-  expect(await screen.findByText("Wagon 5, miejsce 12")).toBeTruthy();
+  await screen.findByLabelText("Imię i nazwisko");
+  expect(container.querySelector(".form-card-seat")?.textContent).toBe("Wagon 5, miejsce 12");
   fireEvent.change(screen.getByLabelText("Imię i nazwisko"), { target: { value: "Anna Kowalska" } });
-  fireEvent.change(screen.getByLabelText("E-mail"), { target: { value: "anna@example.com" } });
-  fireEvent.click(await screen.findByRole("button", { name: "Rezerwuję na 2 minuty" }));
+  fireEvent.change(screen.getByLabelText("Adres e-mail"), { target: { value: "anna@example.com" } });
+  fireEvent.click(await screen.findByRole("button", { name: /Rezerwuję na 2 minuty/ }));
 
   // Ekran licznika liczy od expiresAt z serwera.
   const timer = await screen.findByRole("timer");
@@ -102,13 +103,11 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     fireEvent.click(screen.getByRole("button", { name: /Kupuję bilet/ }));
 
     const ticket = await screen.findByLabelText(/^Bilet PAS-[A-HJ-NP-Z2-9]{6}$/);
+    expect(within(ticket).getByText(event.relation)).toBeTruthy();
+    expect(within(ticket).getByText("21 listopada 2026")).toBeTruthy();
     expect(within(ticket).getByText(event.departureTime)).toBeTruthy();
     expect(within(ticket).getByText(event.arrivalTime)).toBeTruthy();
-    expect(within(ticket).getByText("Warszawa Wschodnia")).toBeTruthy();
-    expect(within(ticket).getByText("Kraków Główny")).toBeTruthy();
-    expect(ticketField(ticket, "Data")).toContain("21 listopada 2026");
-    expect(ticketField(ticket, "Wagon")).toBe("5");
-    expect(ticketField(ticket, "Miejsce")).toMatch(/^12/);
+    expect(ticketField(ticket, "Miejsce")).toBe("Wagon 5, miejsce 12");
 
     // Kupione miejsce zostaje zajęte także po TTL.
     advance(TWO_MINUTES * 5);
@@ -120,11 +119,11 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
 
     advance(TWO_MINUTES);
 
-    expect(await screen.findByText("Rezerwacja wygasła, miejsce wróciło do puli")).toBeTruthy();
+    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Kupuję bilet/ })).toBeNull();
     expect(await takenSeats()).toEqual([]);
 
-    fireEvent.click(screen.getByRole("link", { name: "Wróć do planu wagonu" }));
+    fireEvent.click(screen.getByRole("link", { name: "Mapa wagonu" }));
     await waitFor(() => expect(seatButton("5-12").getAttribute("aria-label")).toMatch(/wolne$/));
     expect(seatButton("5-12").disabled).toBe(false);
   });
@@ -136,7 +135,8 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     ctx.advance(TWO_MINUTES);
     fireEvent.click(screen.getByRole("button", { name: /Kupuję bilet/ }));
 
-    expect(await screen.findByText("Rezerwacja wygasła, miejsce wróciło do puli")).toBeTruthy();
+    expect(await screen.findByText(/Rezerwacja wygasła, a miejsce wróciło do puli/)).toBeTruthy();
+    expect(screen.getByRole("timer").textContent).toBe("00:00");
     expect(screen.queryByLabelText(/^Bilet PAS-/)).toBeNull();
     expect(await takenSeats()).toEqual([]);
   });

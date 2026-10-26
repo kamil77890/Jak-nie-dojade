@@ -1,13 +1,17 @@
-import { formatSeatLabel, type Event, type ReservationView } from "@pas/shared";
-import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  formatEventDate,
+  formatSeatLabel,
+  type Event,
+  type ReservationView,
+} from "@pas/shared";
+import { type FormEvent, useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
-import { ArrowLeft } from "../components/Icons";
-import { TripSummary } from "../components/TripSummary";
+import { ArrowLeft, Clock, Mail, Shield } from "../components/Icons";
+import { RouteStub } from "../components/RouteStub";
 import { createReservation, getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
-import { toSummary, trainLabel } from "../lib/format";
-import { EASE, gsap, useGsap } from "../lib/motion";
+import { toSummary, trainLabel, weekdayPl } from "../lib/format";
 import { loadPassenger, savePassenger, saveReservation } from "../lib/session";
 import { formatTtl, useReservationTtl } from "../lib/ttl";
 import { useDocumentTitle } from "../hooks/useCountdown";
@@ -20,7 +24,6 @@ interface FieldErrors {
 export function ReservePage() {
   const { eventId = "", seatId = "" } = useParams();
   const navigate = useNavigate();
-  const root = useRef<HTMLDivElement>(null);
 
   const [event, setEvent] = useState<Event | null>(null);
   const [seatTaken, setSeatTaken] = useState(false);
@@ -37,7 +40,12 @@ export function ReservePage() {
 
   useEffect(() => {
     let alive = true;
+    // Ta sama trasa z innym kursem lub miejscem nie może pokazać starego błędu ani formularza.
     setLoading(true);
+    setLoadError(null);
+    setEvent(null);
+    setSeatTaken(false);
+    setServerError(null);
     getEvent(eventId)
       .then((result) => {
         if (!alive) return;
@@ -56,54 +64,44 @@ export function ReservePage() {
     };
   }, [eventId, seatId]);
 
-  useGsap(
-    root,
-    () => {
-      gsap.from(".seat-digit", { yPercent: 110, duration: 1.3, stagger: 0.12, ease: EASE });
-      gsap.from(".intro", { y: 40, opacity: 0, duration: 1.2, stagger: 0.08, ease: EASE, delay: 0.15 });
-    },
-    [Boolean(event), seatTaken],
-  );
-
-  const seat = event?.wagons.flatMap((wagon) => wagon.seats).find((item) => item.id === seatId);
-
   if (loading) {
     return (
-      <Frame>
-        <LoadingBlock label="Sprawdzamy, czy miejsce jest wolne…" />
-      </Frame>
+      <div className="page">
+        <LoadingBlock label="Sprawdzamy, czy miejsce wciąż jest wolne…" />
+      </div>
     );
   }
 
   if (loadError || !event) {
     return (
-      <Frame narrow>
+      <div className="page page--narrow">
         <ErrorPanel
           title="Nie udało się wczytać kursu"
-          message={loadError ?? "Wróć do odjazdów i wybierz kurs jeszcze raz."}
+          message={loadError ?? "Wróć do rozkładu i wybierz kurs jeszcze raz."}
           action={
-            <Link className="btn btn-ghost" to="/" viewTransition>
-              Wróć do odjazdów
+            <Link className="button button--ghost" to="/">
+              Wróć do rozkładu
             </Link>
           }
         />
-      </Frame>
+      </div>
     );
   }
 
+  const seat = event.wagons.flatMap((wagon) => wagon.seats).find((item) => item.id === seatId);
   if (!seat) {
     return (
-      <Frame narrow>
+      <div className="page page--narrow">
         <ErrorPanel
           title="To miejsce nie istnieje"
           message={`Kurs ${trainLabel(event.id)} nie ma miejsca ${seatId}.`}
           action={
-            <Link className="btn btn-ghost" to={`/events/${event.id}`} viewTransition>
-              Wróć do planu wagonu
+            <Link className="button button--ghost" to={`/events/${event.id}`}>
+              Wróć do mapy wagonu
             </Link>
           }
         />
-      </Frame>
+      </div>
     );
   }
 
@@ -111,27 +109,27 @@ export function ReservePage() {
 
   if (seatTaken) {
     return (
-      <Frame narrow>
+      <div className="page page--narrow">
         <ErrorPanel
           title="To miejsce jest już zajęte"
-          message={`${seatLabel} jest już kupione albo ktoś je właśnie trzyma. Wybierz inne wolne miejsce na planie.`}
+          message={`${seatLabel} ktoś właśnie trzyma albo kupił. Wybierz inne wolne miejsce na mapie.`}
           action={
-            <Link className="btn btn-primary" to={`/events/${event.id}`} viewTransition>
-              Wróć do planu wagonu
+            <Link className="button button--primary" to={`/events/${event.id}`}>
+              Wróć do mapy wagonu
             </Link>
           }
         />
-      </Frame>
+      </div>
     );
   }
 
   function validate(): FieldErrors {
     const errors: FieldErrors = {};
     if (passenger.customerName.trim().length < 2) {
-      errors.customerName = "Wpisz imię i nazwisko, co najmniej 2 znaki.";
+      errors.customerName = "Podaj imię i nazwisko — co najmniej 2 znaki.";
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(passenger.email.trim())) {
-      errors.email = "Wpisz adres e-mail w formie anna@example.com.";
+      errors.email = "Podaj poprawny adres e-mail, np. anna@example.com.";
     }
     return errors;
   }
@@ -167,10 +165,7 @@ export function ReservePage() {
         email,
       };
       saveReservation(view);
-      navigate(`/reservations/${created.reservationId}`, {
-        state: { reservation: view },
-        viewTransition: true,
-      });
+      navigate(`/reservations/${created.reservationId}`, { state: { reservation: view } });
     } catch (caught) {
       setServerError(describeApiError(caught));
     } finally {
@@ -178,141 +173,152 @@ export function ReservePage() {
     }
   }
 
-  const wagonNumber = seat.id.split("-")[0];
-
   return (
-    <div ref={root}>
-      <Frame>
-        <Link className="inline-flex items-center gap-2 text-[15px] font-semibold text-muted transition-colors hover:text-ink" to={`/events/${event.id}`} viewTransition>
+    <div className="page">
+      <section className="reserve-hero">
+        <Link className="back-link" to={`/events/${event.id}`}>
           <ArrowLeft size={16} />
-          Plan wagonu
+          Wagon {event.wagons.find((wagon) => wagon.seats.some((item) => item.id === seat.id))?.number}
         </Link>
+        <p className="eyebrow">
+          Karta B · rezerwacja · {trainLabel(event.id)} · {weekdayPl(event.date)}
+        </p>
+        <h1>
+          Miejsce <em>na Ciebie.</em>
+        </h1>
+        <p className="reserve-lead">
+          Rezerwujesz miejsce na kurs {event.relation}. Trzymamy je {ttl}, a potem wraca do puli
+          — bez pytań i bez opłat.
+        </p>
+        <p className="reserve-date">{formatEventDate(event.date)}</p>
+      </section>
 
-        <div className="mt-8 grid items-start gap-6 lg:grid-cols-2 lg:gap-8">
-          <section className="relative overflow-hidden rounded-[28px] bg-accent p-7 text-black sm:p-10" aria-labelledby="seat-title">
-            <h1 id="seat-title" className="flex gap-10 sm:gap-14" aria-label={`Twoje miejsce: ${seatLabel}`}>
-              {[
-                ["Wagon", wagonNumber],
-                ["Miejsce", String(seat.number)],
-              ].map(([label, value]) => (
-                <span key={label} className="flex flex-col">
-                  <small className="text-[16px] font-semibold">{label}</small>
-                  <span className="overflow-hidden">
-                    <span className="seat-digit block text-[clamp(96px,12vw,168px)] font-extrabold leading-[0.85] narrow">
-                      {value}
-                    </span>
-                  </span>
-                </span>
-              ))}
-            </h1>
-            <p className="intro mt-6 border-t-2 border-black/80 pt-5 text-[20px] font-bold">{seatLabel}</p>
-            <div className="intro mt-6 rounded-2xl bg-white/85 p-5 text-ink [--c-ink:#0b0d10] [--c-line:rgb(11_13_16/0.1)] [--c-muted:#5a616c] [--c-surface:#fff]">
-              <TripSummary event={toSummary(event)} seatId={seat.id} />
+      <div className="reserve-layout">
+        <section className="form-card">
+          <div className="form-card-head">
+            <p className="eyebrow">Kto jedzie?</p>
+            <p className="form-card-seat">{seatLabel}</p>
+            <h2>Dane podróżnego</h2>
+            <p>Potrzebujemy tylko imienia i adresu e-mail. Konto nie jest wymagane.</p>
+          </div>
+
+          <form onSubmit={(submitEvent) => void handleSubmit(submitEvent)} noValidate>
+            <div className="field">
+              <label htmlFor="customerName">Imię i nazwisko</label>
+              <input
+                id="customerName"
+                name="customerName"
+                autoComplete="name"
+                maxLength={80}
+                value={passenger.customerName}
+                onChange={(changeEvent) => {
+                  setPassenger((current) => ({ ...current, customerName: changeEvent.target.value }));
+                  setFieldErrors((current) => ({ ...current, customerName: undefined }));
+                }}
+                aria-invalid={Boolean(fieldErrors.customerName)}
+                aria-describedby={fieldErrors.customerName ? "customerName-error" : undefined}
+                placeholder="Anna Kowalska"
+              />
+              {fieldErrors.customerName ? (
+                <p className="field-error" id="customerName-error">
+                  {fieldErrors.customerName}
+                </p>
+              ) : null}
             </div>
-          </section>
 
-          <section className="intro card p-7 sm:p-10" aria-labelledby="form-title">
-            <h2 id="form-title" className="text-[clamp(34px,3.8vw,48px)] font-extrabold leading-none condensed">
-              Kto jedzie?
-            </h2>
-            <p className="mt-3 max-w-[44ch] text-muted">
-              Wystarczy imię i e-mail. Na ten adres wyślemy potwierdzenie, a bilet zobaczysz od razu
-              na ekranie.
-            </p>
+            <div className="field">
+              <label htmlFor="email">Adres e-mail</label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                maxLength={160}
+                value={passenger.email}
+                onChange={(changeEvent) => {
+                  setPassenger((current) => ({ ...current, email: changeEvent.target.value }));
+                  setFieldErrors((current) => ({ ...current, email: undefined }));
+                }}
+                aria-invalid={Boolean(fieldErrors.email)}
+                aria-describedby={fieldErrors.email ? "email-error" : "email-hint"}
+                placeholder="anna@example.com"
+              />
+              {fieldErrors.email ? (
+                <p className="field-error" id="email-error">
+                  {fieldErrors.email}
+                </p>
+              ) : (
+                <p className="field-hint" id="email-hint">
+                  Na ten adres wyślemy potwierdzenie. Sam bilet dostajesz od razu na ekranie.
+                </p>
+              )}
+            </div>
 
-            <form className="mt-8 space-y-5" onSubmit={(submitEvent) => void handleSubmit(submitEvent)} noValidate>
-              <Field id="customerName" label="Imię i nazwisko" error={fieldErrors.customerName}>
-                <input
-                  id="customerName"
-                  name="customerName"
-                  autoComplete="name"
-                  maxLength={80}
-                  className="field-input"
-                  value={passenger.customerName}
-                  onChange={(changeEvent) => {
-                    setPassenger((current) => ({ ...current, customerName: changeEvent.target.value }));
-                    setFieldErrors((current) => ({ ...current, customerName: undefined }));
-                  }}
-                  aria-invalid={Boolean(fieldErrors.customerName)}
-                  aria-describedby={fieldErrors.customerName ? "customerName-error" : undefined}
-                  placeholder="Anna Kowalska"
-                />
-              </Field>
+            {serverError ? <InlineAlert>{serverError}</InlineAlert> : null}
 
-              <Field id="email" label="E-mail" error={fieldErrors.email}>
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  inputMode="email"
-                  autoComplete="email"
-                  maxLength={160}
-                  className="field-input"
-                  value={passenger.email}
-                  onChange={(changeEvent) => {
-                    setPassenger((current) => ({ ...current, email: changeEvent.target.value }));
-                    setFieldErrors((current) => ({ ...current, email: undefined }));
-                  }}
-                  aria-invalid={Boolean(fieldErrors.email)}
-                  aria-describedby={fieldErrors.email ? "email-error" : undefined}
-                  placeholder="anna@example.com"
-                />
-              </Field>
-
-              {serverError ? <InlineAlert>{serverError}</InlineAlert> : null}
-
-              <button type="submit" className="btn btn-primary min-h-[60px] w-full text-[18px]" disabled={submitting} aria-busy={submitting}>
+            <div className="form-submit">
+              <button
+                type="submit"
+                className="button button--primary button--wide button--xl"
+                disabled={submitting}
+                aria-busy={submitting}
+              >
                 {submitting ? (
                   <>
-                    <span className="size-4 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden="true" />
-                    Rezerwujemy…
+                    <span className="spinner spinner--dark" aria-hidden="true" />
+                    Trzymamy miejsce…
                   </>
                 ) : (
-                  `Rezerwuję na ${ttl}`
+                  <>
+                    <Clock size={19} />
+                    Rezerwuję na {ttl}
+                  </>
                 )}
               </button>
-              <p className="text-[14px] text-muted">
-                Przez {ttl} nikt inny nie zajmie tego miejsca. Potem wraca do sprzedaży, chyba że
-                kupisz bilet.
+              <p className="form-note">
+                <Shield size={15} />
+                Rezerwacja jest ważna {ttl}. Nie pobieramy danych karty.
               </p>
-            </form>
+            </div>
+          </form>
+        </section>
+
+        <div className="reserve-aside">
+          <RouteStub event={toSummary(event)} seatId={seat.id} label="Rezerwacja" />
+
+          <section className="aside-card">
+            <p className="eyebrow">Co dalej?</p>
+            <ol className="next-steps">
+              <li>
+                <span>01</span>
+                <div>
+                  <strong>Zobaczysz licznik</strong>
+                  <p>Pokazuje czas z serwera, nie z zegara przeglądarki.</p>
+                </div>
+              </li>
+              <li>
+                <span>02</span>
+                <div>
+                  <strong>Klikniesz „Kupuję bilet”</strong>
+                  <p>Bez płatności w Etapie I. Od razu dostajesz kod.</p>
+                </div>
+              </li>
+              <li>
+                <span>03</span>
+                <div>
+                  <strong>E-mail poleci w tle</strong>
+                  <p>Kolejka zajmie się potwierdzeniem, nawet jeśli poczta zwolni.</p>
+                </div>
+              </li>
+            </ol>
+            <p className="aside-footnote">
+              <Mail size={14} />
+              E-mail nie blokuje wydania biletu.
+            </p>
           </section>
         </div>
-      </Frame>
-    </div>
-  );
-}
-
-function Frame({ children, narrow = false }: { children: ReactNode; narrow?: boolean }) {
-  return (
-    <div className={`mx-auto px-4 pb-24 pt-10 sm:px-8 ${narrow ? "max-w-[760px]" : "max-w-[1320px]"}`}>
-      {children}
-    </div>
-  );
-}
-
-function Field({
-  id,
-  label,
-  error,
-  children,
-}: {
-  id: string;
-  label: string;
-  error?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div>
-      <label htmlFor={id} className="mb-2 block text-[15px] font-semibold">
-        {label}
-      </label>
-      {children}
-      {error ? (
-        <p id={`${id}-error`} className="mt-2 text-[15px] font-semibold text-danger">
-          {error}
-        </p>
-      ) : null}
+      </div>
     </div>
   );
 }

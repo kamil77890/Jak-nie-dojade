@@ -5,6 +5,7 @@ import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   CheckCircle,
   Mail,
   Queue,
@@ -159,7 +160,7 @@ export function LabPage() {
           message={`${error} Panel działa, gdy API ma OPS_ENABLED=true.`}
           onRetry={() => void load(true)}
           action={
-            <Link className="btn btn-ghost" to="/" viewTransition>
+            <Link className="button button--ghost" to="/">
               Wróć do rozkładu
             </Link>
           }
@@ -180,16 +181,27 @@ export function LabPage() {
 
   return (
     <div className="page lab-page">
+      <Link className="back-link" to="/">
+        <ArrowLeft size={16} />
+        Rozkład jazdy
+      </Link>
+
       <section className="lab-hero">
-        <h1>Laboratorium niezawodności</h1>
+        <p className="eyebrow">
+          <span className="eyebrow-rule" aria-hidden="true" />
+          E04 · E05 · E06
+        </p>
+        <h1>
+          Laboratorium <em>niezawodności.</em>
+        </h1>
         <p>
           Tu widać, co się dzieje, gdy dostawca poczty pada, ruch rośnie, a praca musi poczekać.
           Kasa nadal wydaje bilety — tylko część rzeczy dzieje się w tle.
         </p>
         <div className="lab-chips" aria-label="Zakres praktyk">
-          <span>E04 timeout, retry, breaker</span>
-          <span>E05 limit, load shedding, bulkhead</span>
-          <span>E06 kolejka, ack, DLQ</span>
+          <span>timeout · retry · breaker</span>
+          <span>limit · load shedding · bulkhead</span>
+          <span>kolejka · ack · DLQ</span>
         </div>
       </section>
 
@@ -202,11 +214,11 @@ export function LabPage() {
         <div className="lab-toolbar-actions">
           <button
             type="button"
-            className="btn btn-ghost min-h-10 px-4 text-[14px]"
+            className="button button--ghost button--small"
             onClick={() => void runAction("refresh", async () => undefined)}
             disabled={busy !== null}
           >
-            <Refresh size={15} className={busy === "refresh" ? "animate-spin" : ""} />
+            <Refresh size={15} className={busy === "refresh" ? "spin" : ""} />
             Odśwież
           </button>
         </div>
@@ -340,7 +352,7 @@ export function LabPage() {
 
           <button
             type="button"
-            className="btn btn-ghost min-h-10 px-4 text-[14px]"
+            className="button button--ghost button--small"
             onClick={() => void runRateProbe()}
             disabled={Boolean(busy)}
           >
@@ -419,7 +431,7 @@ export function LabPage() {
       <section className="lab-section" aria-labelledby="jobs-title">
         <div className="section-head section-head--compact">
           <div>
-            <p className="eyebrow">Claim, praca, ack</p>
+            <p className="eyebrow">Kolejka · claim → praca → ack</p>
             <h2 id="jobs-title">Ostatnie joby</h2>
           </div>
           <p className="section-meta">
@@ -467,7 +479,7 @@ export function LabPage() {
                       {job.state === "dlq" ? (
                         <button
                           type="button"
-                          className="btn btn-dark min-h-8 px-3 text-[13px]"
+                          className="button button--tiny"
                           onClick={() => void runAction(`job:${job.id}`, () => retryJob(job.id))}
                           disabled={Boolean(busy)}
                         >
@@ -486,12 +498,12 @@ export function LabPage() {
       <section className="lab-section" aria-labelledby="mail-title">
         <div className="section-head section-head--compact">
           <div>
-            <p className="eyebrow">Mock dostawcy z idempotency key</p>
+            <p className="eyebrow">Mock dostawcy · idempotency</p>
             <h2 id="mail-title">Skrzynka</h2>
           </div>
           <button
             type="button"
-            className="btn btn-ghost min-h-10 px-4 text-[14px]"
+            className="button button--ghost button--small"
             onClick={() => void runAction("reset", resetMailbox)}
             disabled={Boolean(busy) || !mail.available}
           >
@@ -520,7 +532,8 @@ export function LabPage() {
       <section className="lab-scenarios" aria-labelledby="scenarios-title">
         <div className="section-head section-head--compact">
           <div>
-            <h2 id="scenarios-title">Trzy scenariusze do sprawdzenia</h2>
+            <p className="eyebrow">Trzy scenariusze demo</p>
+            <h2 id="scenarios-title">Co warto kliknąć</h2>
           </div>
         </div>
         <div className="scenario-grid">

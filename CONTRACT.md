@@ -144,7 +144,7 @@ Odmowy:
 | `400` | `VALIDATION_ERROR` | brak pola, zły e-mail, za krótkie imię |
 | `404` | `EVENT_OR_SEAT_NOT_FOUND` | nie ma kursu albo miejsca w tym kursie |
 | `409` | `SEAT_UNAVAILABLE` | miejsce jest kupione albo ma ważną rezerwację |
-| `429` | `RATE_LIMITED` | przekroczony limit rezerwacji per IP (60 na start + 2/s); nagłówek `Retry-After`. Odmowy `400`/`404` nie zużywają limitu, `409` zużywa |
+| `429` | `RATE_LIMITED` | przekroczony limit rezerwacji per IP (60 na start + 2/s); nagłówek `Retry-After`. Odmowy walidacji (`400`, `413`, `415`) nie zużywają limitu; `404` i `409` zużywają |
 | `503` | `BUSY` / `OVERLOADED` | przeciążenie lub pełna pula zapisów |
 
 Zapis jest atomowy: sprawdzenie i insert dzieją się w jednej transakcji `BEGIN IMMEDIATE`, a częściowy unikalny indeks `(event_id, seat_id) WHERE status IN ('active','purchased')` jest ostatnią linią obrony.
