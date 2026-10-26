@@ -1,0 +1,30 @@
+{
+  "name": "pas-s01-train-ticket",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.15.0",
+  "description": "PAS S01 / Etap I — kasa biletowa w wariancie Pociąg. Karty A, B i C z praktykami E04–E06.",
+  "scripts": {
+    "dev": "concurrently -k -n api,mail,web -c blue,magenta,green \"pnpm --filter @pas/api dev\" \"pnpm --filter @pas/mock-mail dev\" \"pnpm --filter @pas/web dev\"",
+    "dev:api": "pnpm --filter @pas/api dev",
+    "dev:mail": "pnpm --filter @pas/mock-mail dev",
+    "dev:web": "pnpm --filter @pas/web dev",
+    "build": "pnpm -r build",
+    "start": "pnpm --filter @pas/api start",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "pnpm -r typecheck",
+    "preview": "concurrently -k -n api,mail,web -c blue,magenta,green \"node apps/api/dist/server.js\" \"node apps/mock-mail/dist/server.js\" \"pnpm --filter @pas/web preview\""
+  },
+  "devDependencies": {
+    "@types/node": "24.10.0",
+    "concurrently": "9.2.1",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
