@@ -18,6 +18,8 @@ export interface AppConfig {
   /** Skąd wziął się TTL i czy obie zmienne TTL były ustawione naraz — do logu startowego. */
   ttlSource: TtlSource;
   ttlConflict: boolean;
+  /** Zmienne TTL z niepoprawną wartością (np. "2min"), które zostały zignorowane. */
+  ttlInvalid: TtlSource[];
   opsEnabled: boolean;
   /** Gdy ustawiony, `/api/ops/*` wymaga nagłówka `Authorization: Bearer <token>`. */
   opsToken: string | null;
@@ -45,6 +47,8 @@ export interface AppConfig {
   overload: {
     maxInFlight: number;
     retryAfterSeconds: number;
+    /** Maksymalny czas na odebranie całego requestu; chroni przed wolnym body. */
+    requestTimeoutMs: number;
   };
   rateLimit: {
     enabled: boolean;
@@ -114,6 +118,7 @@ export function loadConfig(env: Env = process.env): AppConfig {
     ttlMs: ttl.ttlMs,
     ttlSource: ttl.source,
     ttlConflict: ttl.conflict,
+    ttlInvalid: ttl.invalid,
     // Panel ops pokazuje reservationId i treść maili — na produkcji tylko po jawnym włączeniu.
     opsEnabled: readBool(env, "OPS_ENABLED", !production),
     opsToken: env.OPS_TOKEN?.trim() || null,
@@ -139,17 +144,19 @@ export function loadConfig(env: Env = process.env): AppConfig {
     overload: {
       maxInFlight: readInt(env, "LOAD_SHED_MAX_IN_FLIGHT", 80, 1),
       retryAfterSeconds: readInt(env, "LOAD_SHED_RETRY_AFTER", 5, 1),
+      requestTimeoutMs: readInt(env, "REQUEST_TIMEOUT_MS", 10_000, 100),
     },
     rateLimit: {
       enabled: readBool(env, "RATE_LIMIT_ENABLED", true),
-      // Normalny klient (także tester z jednego IP) mieści się w limicie,
-      // a zalew 100 rezerwacji w 10 s dostaje 429 po ok. 60–80 próbach.
-      // Do limitu rezerwacji liczą się tylko requesty, które przeszły walidację
-      // (400/404 oddają żeton) — patrz createRateLimitGuard w app.ts.
+      // 40 na start i 4/s: szybki przebieg testera (B3 + B1 + B2 + przygotowanie testów C)
+      // mieści się w limicie, zalew 100 rezerwacji w 10 s dostaje ok. 20×429, a po zalewie
+      // limit odbudowuje się w ok. 10 s. Requestów wysłanych tuż po zalewie nie uratuje
+      // żadne ustawienie, które nadal łapie B5 (porównanie 60/2, 40/4 i 30/5 w README).
+      // Odmowy walidacji (400/413/415) oddają żeton, 404 i 409 nie — patrz app.ts.
       global: { capacity: 300, refillPerSecond: 10 },
       reservation: {
-        capacity: readInt(env, "RATE_LIMIT_RESERVATION_CAPACITY", 60, 1),
-        refillPerSecond: readInt(env, "RATE_LIMIT_RESERVATION_REFILL_PER_SECOND", 2, 0),
+        capacity: readInt(env, "RATE_LIMIT_RESERVATION_CAPACITY", 40, 1),
+        refillPerSecond: readInt(env, "RATE_LIMIT_RESERVATION_REFILL_PER_SECOND", 4, 0),
       },
       purchase: { capacity: 40, refillPerSecond: 2 },
     },
@@ -168,7 +175,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
 }
 
 export type DeepPartial<T> = {
-  [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
+  // Tablice podmieniamy w całości, nie element po elemencie.
+  [K in keyof T]?: T[K] extends readonly unknown[] ? T[K] : T[K] extends object ? DeepPartial<T[K]> : T[K];
 };
 
 export function mergeConfig(base: AppConfig, override?: DeepPartial<AppConfig>): AppConfig {
@@ -202,6 +210,18 @@ export function configWarnings(config: AppConfig): string[] {
     warnings.push(
       `Ustawione są RESERVATION_TTL_SECONDS i RESERVATION_TTL_MINUTES — wygrywa SECONDS ` +
         `(${Math.round(config.ttlMs / 1000)} s). Usuń zmienną, której nie chcesz.`,
+    );
+  }
+  for (const name of config.ttlInvalid) {
+    warnings.push(
+      `${name} ma niepoprawną wartość (to musi być dodatnia liczba, np. 2) — zmienna jest ` +
+        `ignorowana, TTL wynosi ${Math.round(config.ttlMs / 1000)} s.`,
+    );
+  }
+  if (config.production && config.ttlSource === "default") {
+    warnings.push(
+      "Produkcja działa na domyślnym TTL 15 min. Tryb testowy prowadzącego wymaga " +
+        "RESERVATION_TTL_MINUTES=2 — bez tego test kończy się na warunku wstępnym.",
     );
   }
   if (config.trustProxy === true) {

@@ -79,8 +79,9 @@ export function registerOpsRoutes(app: FastifyInstance, dependencies: OpsDepende
     "/api/ops/jobs",
     { preHandler: dependencies.readGuards },
     async (request) => {
-      const limit = Number(request.query.limit ?? 30);
-      return dependencies.queue.list(Number.isFinite(limit) ? limit : 30);
+      // SQLite przyjmuje w LIMIT tylko liczbę całkowitą; "1.5" albo "-3" dawały 500.
+      const limit = Math.trunc(Number(request.query.limit ?? 30));
+      return dependencies.queue.list(Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 200) : 30);
     },
   );
 

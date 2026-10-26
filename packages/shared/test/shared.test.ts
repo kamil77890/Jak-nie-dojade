@@ -29,18 +29,44 @@ describe("TTL", () => {
   });
 
   it("podaje źródło efektywnego TTL", () => {
-    expect(resolveTtlFromEnv({})).toEqual({ ttlMs: 900_000, source: "default", conflict: false });
+    expect(resolveTtlFromEnv({})).toEqual({
+      ttlMs: 900_000,
+      source: "default",
+      conflict: false,
+      invalid: [],
+    });
     expect(resolveTtlFromEnv({ RESERVATION_TTL_MINUTES: "2" })).toEqual({
       ttlMs: 120_000,
       source: "RESERVATION_TTL_MINUTES",
       conflict: false,
+      invalid: [],
+    });
+  });
+
+  it("zgłasza niepoprawne wartości zamiast po cichu brać 15 minut", () => {
+    expect(resolveTtlFromEnv({ RESERVATION_TTL_MINUTES: "2min" })).toEqual({
+      ttlMs: 900_000,
+      source: "default",
+      conflict: false,
+      invalid: ["RESERVATION_TTL_MINUTES"],
+    });
+    expect(resolveTtlFromEnv({ RESERVATION_TTL_SECONDS: "-5", RESERVATION_TTL_MINUTES: "2" })).toMatchObject({
+      ttlMs: 120_000,
+      invalid: ["RESERVATION_TTL_SECONDS"],
+    });
+  });
+
+  it("przyjmuje przecinek dziesiętny", () => {
+    expect(resolveTtlFromEnv({ RESERVATION_TTL_MINUTES: "2,5" })).toMatchObject({
+      ttlMs: 150_000,
+      invalid: [],
     });
   });
 
   it("sekundy mają pierwszeństwo, a konflikt obu zmiennych jest zgłaszany", () => {
     expect(
       resolveTtlFromEnv({ RESERVATION_TTL_SECONDS: "20", RESERVATION_TTL_MINUTES: "2" }),
-    ).toEqual({ ttlMs: 20_000, source: "RESERVATION_TTL_SECONDS", conflict: true });
+    ).toEqual({ ttlMs: 20_000, source: "RESERVATION_TTL_SECONDS", conflict: true, invalid: [] });
     // Pusta zmienna w .env (np. `RESERVATION_TTL_SECONDS=`) nie jest konfliktem.
     expect(
       resolveTtlFromEnv({ RESERVATION_TTL_SECONDS: "", RESERVATION_TTL_MINUTES: "2" }).conflict,

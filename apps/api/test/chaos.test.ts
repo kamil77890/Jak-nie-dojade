@@ -32,14 +32,15 @@ describe("test chaosu — limit rezerwacji przy szybkim przebiegu z jednego IP",
     ctx = await withDefaultLimits();
     const statuses: number[] = [];
 
-    // B3: 14 złych requestów — nie mogą zjadać limitu.
+    // B3: nieistniejące wydarzenie i miejsce (404 zużywa żeton), puste imię i e-mail
+    // (400 oddaje żeton), każde dwa razy — zegar stoi, więc to najgorszy przypadek.
     const bad = [
       reservationPayload({ eventId: "nie-ma-takiego" }),
       reservationPayload({ seatId: "9-99" }),
       reservationPayload({ customerName: "" }),
       reservationPayload({ email: "" }),
     ];
-    for (let i = 0; i < 14; i += 1) {
+    for (let i = 0; i < 8; i += 1) {
       const response = await reserve(ctx, bad[i % bad.length]!);
       expect([400, 404]).toContain(response.statusCode);
     }
@@ -61,8 +62,9 @@ describe("test chaosu — limit rezerwacji przy szybkim przebiegu z jednego IP",
     expect(b2Codes.filter((code) => code >= 200 && code < 300)).toHaveLength(1);
     expect(b2Codes.filter((code) => code === 409)).toHaveLength(19);
 
-    // C1, C2 (5 × X i Y), C4, A2, B4 — ok. 20 kolejnych rezerwacji bez czekania.
-    for (const seat of ALL_SEATS.slice(10, 30)) {
+    // Przygotowanie C1, C2, C4, A2, B4 — 10 kolejnych rezerwacji bez czekania.
+    // Kolejne rundy C2 czekają na wygaśnięcie, więc limit zdąży się odbudować.
+    for (const seat of ALL_SEATS.slice(10, 20)) {
       const response = await reserve(ctx, reservationPayload(seat));
       expect(response.statusCode).toBe(201);
     }
@@ -86,7 +88,7 @@ describe("test chaosu — B5: zalew rezerwacji od jednego klienta", () => {
     }
 
     expect(codes.filter((code) => code >= 500)).toHaveLength(0);
-    expect(codes.slice(0, 60).every((code) => code === 201)).toBe(true);
+    expect(codes.slice(0, 40).every((code) => code === 201)).toBe(true);
     expect(codes.filter((code) => code === 429).length).toBeGreaterThanOrEqual(15);
 
     const other = await reserve(ctx, reservationPayload(ALL_SEATS[110]!), "203.0.113.50");

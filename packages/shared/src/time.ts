@@ -12,12 +12,21 @@ export interface TtlResolution {
   source: TtlSource;
   /** true, gdy ustawione są obie zmienne, a `RESERVATION_TTL_MINUTES` została zignorowana. */
   conflict: boolean;
+  /** Zmienne ustawione na wartość, która nie jest dodatnią liczbą (np. "2min") — zignorowane. */
+  invalid: TtlSource[];
 }
 
-function positive(raw: string | undefined): number | null {
+type Parsed = { value: number } | { invalid: true } | null;
+
+/** Dodatnia liczba; przecinek dziesiętny ("2,5") też przechodzi. Pusta wartość to brak zmiennej. */
+function positive(raw: string | undefined): Parsed {
   if (raw === undefined || raw.trim() === "") return null;
-  const value = Number(raw);
-  return Number.isFinite(value) && value > 0 ? value : null;
+  const value = Number(raw.trim().replace(",", "."));
+  return Number.isFinite(value) && value > 0 ? { value } : { invalid: true };
+}
+
+function valueOf(parsed: Parsed): number | null {
+  return parsed && "value" in parsed ? parsed.value : null;
 }
 
 /**
@@ -25,20 +34,36 @@ function positive(raw: string | undefined): number | null {
  * Pierwszeństwo: `RESERVATION_TTL_SECONDS` > `RESERVATION_TTL_MINUTES` > 15 min.
  */
 export function resolveTtlFromEnv(env: Env = process.env): TtlResolution {
-  const seconds = positive(env.RESERVATION_TTL_SECONDS);
-  const minutes = positive(env.RESERVATION_TTL_MINUTES);
+  const secondsParsed = positive(env.RESERVATION_TTL_SECONDS);
+  const minutesParsed = positive(env.RESERVATION_TTL_MINUTES);
+  const seconds = valueOf(secondsParsed);
+  const minutes = valueOf(minutesParsed);
+  const invalid: TtlSource[] = [];
+  if (secondsParsed && "invalid" in secondsParsed) invalid.push("RESERVATION_TTL_SECONDS");
+  if (minutesParsed && "invalid" in minutesParsed) invalid.push("RESERVATION_TTL_MINUTES");
 
   if (seconds !== null) {
     return {
       ttlMs: Math.round(seconds * 1000),
       source: "RESERVATION_TTL_SECONDS",
       conflict: minutes !== null,
+      invalid,
     };
   }
   if (minutes !== null) {
-    return { ttlMs: Math.round(minutes * 60_000), source: "RESERVATION_TTL_MINUTES", conflict: false };
+    return {
+      ttlMs: Math.round(minutes * 60_000),
+      source: "RESERVATION_TTL_MINUTES",
+      conflict: false,
+      invalid,
+    };
   }
-  return { ttlMs: DEFAULT_RESERVATION_TTL_MINUTES * 60_000, source: "default", conflict: false };
+  return {
+    ttlMs: DEFAULT_RESERVATION_TTL_MINUTES * 60_000,
+    source: "default",
+    conflict: false,
+    invalid,
+  };
 }
 
 /**

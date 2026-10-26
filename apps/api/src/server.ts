@@ -38,11 +38,18 @@ try {
   process.exit(1);
 }
 
+const SHUTDOWN_TIMEOUT_MS = 10_000;
+
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   app.log.info({ signal }, "Zamykam API…");
+  // Wiszący request nie może trzymać procesu w nieskończoność.
+  setTimeout(() => {
+    app.log.warn("Zamykanie trwa za długo — kończę proces.");
+    process.exit(1);
+  }, SHUTDOWN_TIMEOUT_MS).unref();
   await app.close();
   process.exit(0);
 }

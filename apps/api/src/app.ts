@@ -95,6 +95,18 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   const app = Fastify({
     logger: options.logger ?? false,
     bodyLimit: 32 * 1024,
+    // Nagłówki muszą dojść w tym czasie (inaczej 408), a połączenie, przez które nic
+    // nie płynie dłużej niż ten czas, jest zamykane — tak kończy się klient, który
+    // wysłał nagłówki i „zapomniał” o body.
+    requestTimeout: config.overload.requestTimeoutMs,
+    connectionTimeout: config.overload.requestTimeoutMs,
+    // Node sprawdza requestTimeout cyklicznie, domyślnie co 30 s.
+    http: {
+      connectionsCheckingInterval: Math.max(
+        50,
+        Math.min(1_000, Math.round(config.overload.requestTimeoutMs / 4)),
+      ),
+    },
     disableRequestLogging: true,
     trustProxy: config.trustProxy,
   });
@@ -165,10 +177,28 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     clock,
   });
 
-  app.addHook("onRequest", async (request, reply) => {
+  const isGuardedApi = (request: FastifyRequest): boolean => {
     const path = requestPath(request);
-    if (!path.startsWith("/api") || path.startsWith("/api/health")) return;
-    if (request.method === "OPTIONS") return;
+    if (!path.startsWith("/api") || path.startsWith("/api/health")) return false;
+    return request.method !== "OPTIONS";
+  };
+
+  // Globalny limit per IP działa od razu, zanim serwer zacznie czytać body.
+  app.addHook("onRequest", async (request, reply) => {
+    if (!isGuardedApi(request) || !config.rateLimit.enabled) return;
+    const result = globalLimiter.consume(request.ip);
+    setRateLimitHeaders(reply, config.rateLimit.global.capacity, result);
+    if (!result.allowed) {
+      guards.rateLimited += 1;
+      throw new RateLimitedError(result.retryAfterSeconds);
+    }
+  });
+
+  // Load shedding liczy dopiero requesty z odebranym body. Klient, który wysyła
+  // nagłówki i nie kończy body, nie zajmuje miejsca innym — i po requestTimeout
+  // Fastify sam go rozłącza.
+  app.addHook("preHandler", async (request, reply) => {
+    if (!isGuardedApi(request)) return;
 
     // Load shedding: szybkie 503, zanim kolejka requestów zje cały serwer.
     if (guards.inFlight >= config.overload.maxInFlight) {
@@ -188,15 +218,6 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       guards.inFlight = Math.max(0, guards.inFlight - 1);
     };
     addLease(request, release);
-
-    if (config.rateLimit.enabled) {
-      const result = globalLimiter.consume(request.ip);
-      setRateLimitHeaders(reply, config.rateLimit.global.capacity, result);
-      if (!result.allowed) {
-        guards.rateLimited += 1;
-        throw new RateLimitedError(result.retryAfterSeconds);
-      }
-    }
   });
 
   const readGuards: Guard[] = [createBulkheadGuard(readPool)];

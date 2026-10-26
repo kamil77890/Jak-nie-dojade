@@ -136,7 +136,7 @@ Panel ops można wyłączyć przez `OPS_ENABLED=false`; przy `NODE_ENV=productio
 | E04 | Retry | `apps/api/src/resilience.ts` + `worker.ts` | liczba prób, backoff, ten sam `Idempotency-Key` |
 | E04 | Circuit breaker | `apps/api/src/resilience.ts` | stan `zamknięty / otwarty / półotwarty` |
 | E04 | Fallback i degradacja | `apps/api/src/worker.ts`, kolejka | bilet wydany mimo awarii poczty; e-mail czeka w tle |
-| E05 | Rate limiting | `apps/api/src/app.ts` — token bucket per IP; rezerwacja 60 na start + 2/s, odmowy walidacji (`400`/`413`/`415`) oddają żeton | `429` + `Retry-After` |
+| E05 | Rate limiting | `apps/api/src/app.ts` — token bucket per IP; rezerwacja 40 na start + 4/s, odmowy walidacji (`400`/`413`/`415`) oddają żeton | `429` + `Retry-After` |
 | E05 | Load shedding | `apps/api/src/app.ts` — limit in-flight | szybkie `503 OVERLOADED` |
 | E05 | Bulkhead | `apps/api/src/resilience.ts` — osobne pule | odczyt i zapis nie zabierają sobie miejsc |
 | E06 | Kolejka | `apps/api/src/jobs.ts` — tabela `jobs` | gotowe / retry / zrobione / DLQ |
@@ -152,6 +152,7 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 - Domyślnie rezerwacja trzyma miejsce **15 minut** (`RESERVATION_TTL_MINUTES`).
 - Do testów i demo można użyć `RESERVATION_TTL_SECONDS`, np. `RESERVATION_TTL_SECONDS=20 pnpm dev`. Ma pierwszeństwo przed `_MINUTES`; gdy ustawisz obie, API ostrzega w logu startowym.
 - Efektywny TTL i jego źródło są w logu startowym oraz w `GET /api/health` (`reservationTtlSeconds`).
+- Niepoprawna wartość (np. `RESERVATION_TTL_MINUTES=2min`) nie przechodzi po cichu: zmienna jest ignorowana, a log startowy to ostrzega. Przecinek dziesiętny (`2,5`) jest akceptowany. Przy `NODE_ENV=production` bez zmiennej TTL log ostrzega, że działa domyślne 15 minut.
 - Interfejs pokazuje TTL z `GET /api/health`, więc w trybie testowym pisze „2 minuty”, a nie „15 minut”.
 - `expiresAt` jest liczone na serwerze w UTC; przeglądarka tylko je pokazuje.
 - Wygaszanie jest leniwe: każdy odczyt mapy i zakup sprawdza czas. Nie ma crona.
@@ -160,7 +161,7 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 ## Testy i jakość
 
 ```bash
-pnpm test        # 85 testów: shared, API, worker, resilience, guardy, test chaosu, wdrożenie, UI kart A/B/C, E2E ekranów
+pnpm test        # 90 testów: shared, API, worker, resilience, guardy, test chaosu, wdrożenie, UI kart A/B/C, E2E ekranów
 pnpm typecheck   # TypeScript strict we wszystkich pakietach
 pnpm build       # API + mock-mail + web
 ```
@@ -187,11 +188,12 @@ Najważniejsze zmienne (pełna lista w `.env.example`):
 | `MAIL_BREAKER_RESET_MS` | `15000` | po jakim czasie próbny request |
 | `WORKER_MAX_ATTEMPTS` | `5` | limit podejść do joba przed DLQ |
 | `WORKER_BASE_BACKOFF_MS` | `2000` | start backoffu kolejki |
-| `LOAD_SHED_MAX_IN_FLIGHT` | `80` | próg load sheddingu |
+| `LOAD_SHED_MAX_IN_FLIGHT` | `80` | próg load sheddingu; liczą się requesty z odebranym body |
+| `REQUEST_TIMEOUT_MS` | `10000` | czas na nagłówki i limit bezczynności połączenia; klient, który przestał wysyłać body, jest rozłączany |
 | `READ_BULKHEAD_CONCURRENCY` | `32` | pula odczytów |
 | `WRITE_BULKHEAD_CONCURRENCY` | `8` | pula zapisów |
-| `RATE_LIMIT_RESERVATION_CAPACITY` | `60` | limit rezerwacji per IP: pojemność kubełka |
-| `RATE_LIMIT_RESERVATION_REFILL_PER_SECOND` | `2` | limit rezerwacji per IP: doładowanie na sekundę |
+| `RATE_LIMIT_RESERVATION_CAPACITY` | `40` | limit rezerwacji per IP: pojemność kubełka |
+| `RATE_LIMIT_RESERVATION_REFILL_PER_SECOND` | `4` | limit rezerwacji per IP: doładowanie na sekundę |
 | `OPS_ENABLED` | `true`; przy `NODE_ENV=production` `false` | panel `/lab` i `/api/ops/*` |
 | `OPS_TOKEN` | — | gdy ustawiony, `/api/ops/*` wymaga `Authorization: Bearer <token>` |
 | `TRUST_PROXY` | `false` | za reverse proxy ustaw **liczbę proxy** przed API, np. `1`; `true` jest podatne na podrobiony `X-Forwarded-For` |
@@ -206,10 +208,17 @@ rm -rf apps/api/data
 
 ## Limit rezerwacji
 
-Limit rezerwacji to token bucket per IP: **60 na start i doładowanie 2 na sekundę**. Do limitu liczą się tylko requesty, które przeszły walidację. Odmowy walidacji (`400`, `413`, `415`: zły body, za duży body, zły `Content-Type`) oddają żeton, bo nie dotknęły bazy, a seria złych requestów i tak jest ograniczona limitem globalnym (300 na start + 10/s). `404` (nieistniejący kurs lub miejsce) i `409 SEAT_UNAVAILABLE` żetonu nie oddają, więc zalew nieistniejących albo zajętych miejsc też dostaje `429`.
+Limit rezerwacji to token bucket per IP: **40 na start i doładowanie 4 na sekundę**. Do limitu liczą się tylko requesty, które przeszły walidację. Odmowy walidacji (`400`, `413`, `415`: zły body, za duży body, zły `Content-Type`) oddają żeton, bo nie dotknęły bazy, a seria złych requestów i tak jest ograniczona limitem globalnym (300 na start + 10/s). `404` (nieistniejący kurs lub miejsce) i `409 SEAT_UNAVAILABLE` żetonu nie oddają, więc zalew nieistniejących albo zajętych miejsc też dostaje `429`.
 
-- Szybki przebieg testera z jednego IP mieści się w limicie: 14 złych requestów (6 × `400` za darmo, 8 × `404` po żetonie), 4 powtórki rezerwacji, 20 równoczesnych prób jednego miejsca i ok. 20 kolejnych rezerwacji pod testy zakupu i TTL to ok. 52 z 60 żetonów.
-- 100 rezerwacji w 10 s z jednego IP: po ok. 60–80 odpowiedziach `2xx`/`409` reszta dostaje `429` z `Retry-After`. Inny klient ma osobny kubełek.
+- Szybki przebieg testera z jednego IP mieści się w limicie: złe requesty z B3 (`400` za darmo, `404` po żetonie), 4 powtórki rezerwacji, 20 równoczesnych prób jednego miejsca i 10 kolejnych rezerwacji pod testy zakupu i TTL — bez żadnego `429`.
+- 100 rezerwacji w 10 s z jednego IP: po ok. 80 odpowiedziach `2xx`/`409` reszta (ok. 20) dostaje `429` z `Retry-After`. Inny klient ma osobny kubełek.
+- Po zalewie limit odbudowuje się w ok. 10 s (żeton co 0,25 s). Requesty wysłane z tego samego IP w ułamku sekundy po zalewie dostaną `429` przy każdym ustawieniu, które nadal łapie B5. Porównanie na prawdziwych requestach:
+
+  | Ustawienie | Szybki przebieg bez B5 | 1 s po zalewie | Zalew rozłożony na 13 s |
+  | --- | --- | --- | --- |
+  | 60 + 2/s | 0 × `429` | 3 z 5 to `429` | 15 × `429` |
+  | **40 + 4/s** (domyślne) | 0 × `429` | 1 z 5 to `429` | 9 × `429` |
+  | 30 + 5/s | 7 z 10 to `429` | 0 z 5 | 6 × `429` |
 - Limit zakupów (40 + 2/s) się nie zmienił, a `404` przy zakupie nadal zużywa żeton. Na tym opiera się demo przeciążenia w `/lab`.
 
 ## Bezpieczeństwo panelu ops

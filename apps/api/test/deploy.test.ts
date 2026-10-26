@@ -41,7 +41,7 @@ describe("konfiguracja wdrożenia", () => {
   });
 
   it("limit rezerwacji da się dostroić zmiennymi", () => {
-    expect(loadConfig({}).rateLimit.reservation).toEqual({ capacity: 60, refillPerSecond: 2 });
+    expect(loadConfig({}).rateLimit.reservation).toEqual({ capacity: 40, refillPerSecond: 4 });
     const tuned = loadConfig({
       RATE_LIMIT_RESERVATION_CAPACITY: "80",
       RATE_LIMIT_RESERVATION_REFILL_PER_SECOND: "3",
@@ -62,8 +62,22 @@ describe("konfiguracja wdrożenia", () => {
 
     const openOps = loadConfig({ NODE_ENV: "production", OPS_ENABLED: "true" });
     expect(configWarnings(openOps).join(" ")).toContain("OPS_TOKEN");
-    const tokenOps = loadConfig({ NODE_ENV: "production", OPS_ENABLED: "true", OPS_TOKEN: "sekret" });
+    const tokenOps = loadConfig({
+      NODE_ENV: "production",
+      OPS_ENABLED: "true",
+      OPS_TOKEN: "sekret",
+      RESERVATION_TTL_MINUTES: "2",
+    });
     expect(configWarnings(tokenOps)).toEqual([]);
+  });
+
+  it("ostrzega przy niepoprawnym TTL i przy produkcji na domyślnych 15 minutach", () => {
+    const typo = configWarnings(loadConfig({ RESERVATION_TTL_MINUTES: "2min" })).join(" ");
+    expect(typo).toContain("RESERVATION_TTL_MINUTES ma niepoprawną wartość");
+
+    const prodDefault = configWarnings(loadConfig({ NODE_ENV: "production" })).join(" ");
+    expect(prodDefault).toContain("domyślnym TTL 15 min");
+    expect(configWarnings(loadConfig({ NODE_ENV: "production", RESERVATION_TTL_MINUTES: "2" }))).toEqual([]);
   });
 
   it("healthcheck pokazuje efektywny TTL", async () => {
