@@ -48,6 +48,12 @@ export class ReservationExpiredError extends HttpError {
   }
 }
 
+export class UnauthorizedError extends HttpError {
+  constructor() {
+    super(401, "UNAUTHORIZED", "Brak lub zły token panelu ops.");
+  }
+}
+
 export class RateLimitedError extends HttpError {
   constructor(retryAfter: number) {
     super(429, "RATE_LIMITED", "Zbyt wiele żądań. Spróbuj chwilę później.", retryAfter);

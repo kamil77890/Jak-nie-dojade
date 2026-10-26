@@ -9,6 +9,7 @@ import {
   getSeat,
   isReservationActive,
   parseSeatId,
+  resolveTtlFromEnv,
   ttlMsFromEnv,
 } from "../src/index";
 
@@ -25,6 +26,25 @@ describe("TTL", () => {
   it("ignoruje śmieci i wartości ujemne", () => {
     expect(ttlMsFromEnv({ RESERVATION_TTL_SECONDS: "-5" })).toBe(15 * 60_000);
     expect(ttlMsFromEnv({ RESERVATION_TTL_MINUTES: "abc" })).toBe(15 * 60_000);
+  });
+
+  it("podaje źródło efektywnego TTL", () => {
+    expect(resolveTtlFromEnv({})).toEqual({ ttlMs: 900_000, source: "default", conflict: false });
+    expect(resolveTtlFromEnv({ RESERVATION_TTL_MINUTES: "2" })).toEqual({
+      ttlMs: 120_000,
+      source: "RESERVATION_TTL_MINUTES",
+      conflict: false,
+    });
+  });
+
+  it("sekundy mają pierwszeństwo, a konflikt obu zmiennych jest zgłaszany", () => {
+    expect(
+      resolveTtlFromEnv({ RESERVATION_TTL_SECONDS: "20", RESERVATION_TTL_MINUTES: "2" }),
+    ).toEqual({ ttlMs: 20_000, source: "RESERVATION_TTL_SECONDS", conflict: true });
+    // Pusta zmienna w .env (np. `RESERVATION_TTL_SECONDS=`) nie jest konfliktem.
+    expect(
+      resolveTtlFromEnv({ RESERVATION_TTL_SECONDS: "", RESERVATION_TTL_MINUTES: "2" }).conflict,
+    ).toBe(false);
   });
 });
 

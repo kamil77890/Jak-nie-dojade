@@ -5,7 +5,6 @@ import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
 import {
   Activity,
   AlertTriangle,
-  ArrowLeft,
   CheckCircle,
   Mail,
   Queue,
@@ -122,7 +121,7 @@ export function LabPage() {
     setProbe(null);
 
     const statuses = await Promise.all(
-      Array.from({ length: 30 }, async () => {
+      Array.from({ length: 60 }, async () => {
         try {
           await purchaseReservation("00000000-0000-0000-0000-000000000000");
           return 200;
@@ -160,7 +159,7 @@ export function LabPage() {
           message={`${error} Panel działa, gdy API ma OPS_ENABLED=true.`}
           onRetry={() => void load(true)}
           action={
-            <Link className="button button--ghost" to="/">
+            <Link className="btn btn-ghost" to="/" viewTransition>
               Wróć do rozkładu
             </Link>
           }
@@ -181,27 +180,16 @@ export function LabPage() {
 
   return (
     <div className="page lab-page">
-      <Link className="back-link" to="/">
-        <ArrowLeft size={16} />
-        Rozkład jazdy
-      </Link>
-
       <section className="lab-hero">
-        <p className="eyebrow">
-          <span className="eyebrow-rule" aria-hidden="true" />
-          E04 · E05 · E06
-        </p>
-        <h1>
-          Laboratorium <em>niezawodności.</em>
-        </h1>
+        <h1>Laboratorium niezawodności</h1>
         <p>
           Tu widać, co się dzieje, gdy dostawca poczty pada, ruch rośnie, a praca musi poczekać.
           Kasa nadal wydaje bilety — tylko część rzeczy dzieje się w tle.
         </p>
         <div className="lab-chips" aria-label="Zakres praktyk">
-          <span>timeout · retry · breaker</span>
-          <span>limit · load shedding · bulkhead</span>
-          <span>kolejka · ack · DLQ</span>
+          <span>E04 timeout, retry, breaker</span>
+          <span>E05 limit, load shedding, bulkhead</span>
+          <span>E06 kolejka, ack, DLQ</span>
         </div>
       </section>
 
@@ -214,11 +202,11 @@ export function LabPage() {
         <div className="lab-toolbar-actions">
           <button
             type="button"
-            className="button button--ghost button--small"
+            className="btn btn-ghost min-h-10 px-4 text-[14px]"
             onClick={() => void runAction("refresh", async () => undefined)}
             disabled={busy !== null}
           >
-            <Refresh size={15} className={busy === "refresh" ? "spin" : ""} />
+            <Refresh size={15} className={busy === "refresh" ? "animate-spin" : ""} />
             Odśwież
           </button>
         </div>
@@ -352,12 +340,12 @@ export function LabPage() {
 
           <button
             type="button"
-            className="button button--ghost button--small"
+            className="btn btn-ghost min-h-10 px-4 text-[14px]"
             onClick={() => void runRateProbe()}
             disabled={Boolean(busy)}
           >
             {busy === "probe" ? <span className="spinner" aria-hidden="true" /> : <Activity size={15} />}
-            Test limitu: 30 prób zakupu
+            Test limitu: 60 prób zakupu
           </button>
 
           {probe ? (
@@ -369,7 +357,7 @@ export function LabPage() {
             </p>
           ) : (
             <p className="lab-hint">
-              Test wysyła 30 zakupów nieistniejącej rezerwacji. Nie tworzy danych, ale pokazuje, jak
+              Test wysyła 60 zakupów nieistniejącej rezerwacji. Nie tworzy danych, ale pokazuje, jak
               limit zamienia nadmiar w 429.
             </p>
           )}
@@ -431,7 +419,7 @@ export function LabPage() {
       <section className="lab-section" aria-labelledby="jobs-title">
         <div className="section-head section-head--compact">
           <div>
-            <p className="eyebrow">Kolejka · claim → praca → ack</p>
+            <p className="eyebrow">Claim, praca, ack</p>
             <h2 id="jobs-title">Ostatnie joby</h2>
           </div>
           <p className="section-meta">
@@ -479,7 +467,7 @@ export function LabPage() {
                       {job.state === "dlq" ? (
                         <button
                           type="button"
-                          className="button button--tiny"
+                          className="btn btn-dark min-h-8 px-3 text-[13px]"
                           onClick={() => void runAction(`job:${job.id}`, () => retryJob(job.id))}
                           disabled={Boolean(busy)}
                         >
@@ -498,12 +486,12 @@ export function LabPage() {
       <section className="lab-section" aria-labelledby="mail-title">
         <div className="section-head section-head--compact">
           <div>
-            <p className="eyebrow">Mock dostawcy · idempotency</p>
+            <p className="eyebrow">Mock dostawcy z idempotency key</p>
             <h2 id="mail-title">Skrzynka</h2>
           </div>
           <button
             type="button"
-            className="button button--ghost button--small"
+            className="btn btn-ghost min-h-10 px-4 text-[14px]"
             onClick={() => void runAction("reset", resetMailbox)}
             disabled={Boolean(busy) || !mail.available}
           >
@@ -532,8 +520,7 @@ export function LabPage() {
       <section className="lab-scenarios" aria-labelledby="scenarios-title">
         <div className="section-head section-head--compact">
           <div>
-            <p className="eyebrow">Trzy scenariusze demo</p>
-            <h2 id="scenarios-title">Co warto kliknąć</h2>
+            <h2 id="scenarios-title">Trzy scenariusze do sprawdzenia</h2>
           </div>
         </div>
         <div className="scenario-grid">
@@ -551,7 +538,7 @@ export function LabPage() {
             <AlertTriangle size={20} />
             <h3>Ruch rośnie</h3>
             <p>
-              Kliknij test 30 zakupów. Część requestów dostanie 429 zamiast obciążać bazę. Przy
+              Kliknij test 60 zakupów. Część requestów dostanie 429 zamiast obciążać bazę. Przy
               większym tłoku load shedding odpowiada szybkim 503.
             </p>
           </article>

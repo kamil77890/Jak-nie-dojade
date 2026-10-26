@@ -1,5 +1,5 @@
 import { buildApp } from "./app";
-import { loadConfig, loadDotEnv } from "./config";
+import { configWarnings, loadConfig, loadDotEnv } from "./config";
 
 loadDotEnv();
 
@@ -8,16 +8,31 @@ const { app } = await buildApp({ config, startWorker: true, logger: true });
 
 try {
   await app.listen({ port: config.port, host: config.host });
+  const ttlSeconds = Math.round(config.ttlMs / 1000);
   app.log.info(
     {
-      ttlSeconds: Math.round(config.ttlMs / 1000),
+      ttlSeconds,
+      ttlSource: config.ttlSource,
+      host: config.host,
+      port: config.port,
+      production: config.production,
       databasePath: config.databasePath,
       mailProvider: config.mail.providerUrl,
       worker: config.worker.enabled,
       ops: config.opsEnabled,
+      opsToken: config.opsToken !== null,
+      trustProxy: config.trustProxy,
+      web: config.webDistPath ?? false,
     },
     "PAS API gotowe",
   );
+  // Osobna, czytelna linia: tryb testowy prowadzącego wymaga TTL ok. 2 minut.
+  app.log.info(
+    `Efektywny TTL rezerwacji: ${ttlSeconds} s (${(ttlSeconds / 60).toFixed(1)} min), źródło: ${config.ttlSource}`,
+  );
+  for (const warning of configWarnings(config)) {
+    app.log.warn(warning);
+  }
 } catch (error) {
   app.log.error(error);
   process.exit(1);

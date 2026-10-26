@@ -1,9 +1,10 @@
 import type { ReservationView, Ticket } from "@pas/shared";
 import { useState } from "react";
+import { Link } from "react-router";
 import { ApiRequestError, purchaseReservation } from "../lib/api";
 import { describeApiError } from "../lib/errors";
 import { saveTicket } from "../lib/session";
-import { AlertTriangle, Mail, Ticket as TicketIcon } from "./Icons";
+import { ArrowRight } from "./Icons";
 
 export function PurchasePanel({
   reservation,
@@ -47,69 +48,50 @@ export function PurchasePanel({
     }
   }
 
+  if (isExpired) {
+    return (
+      <section className="rounded-2xl border border-danger/30 bg-danger/8 p-6" role="alert">
+        <h2 className="text-[24px] font-extrabold leading-tight text-danger condensed">
+          Rezerwacja wygasła, miejsce wróciło do puli
+        </h2>
+        <p className="mb-5 mt-2 text-muted">Po czasie nie wydajemy biletu. Wybierz miejsce jeszcze raz.</p>
+        <Link className="btn btn-dark w-full" to={`/events/${reservation.event.id}`} viewTransition>
+          Wróć do planu wagonu
+        </Link>
+      </section>
+    );
+  }
+
   return (
-    <section className={`purchase-panel ${isExpired ? "purchase-panel--expired" : ""}`}>
-      <div className="purchase-panel-head">
-        <p className="eyebrow">Karta C · zakup</p>
-        <span className="purchase-panel-badge">bez płatności</span>
-      </div>
-
-      {isExpired ? (
-        <div className="expiry-callout" role="alert">
-          <AlertTriangle size={22} />
-          <div>
-            <h2>Rezerwacja wygasła</h2>
-            <p>Miejsce wróciło do puli. Wybierz inne — albo to samo, jeśli wciąż jest wolne.</p>
-          </div>
-        </div>
-      ) : (
-        <>
-          <h2 className="purchase-panel-title">Wszystko gotowe.</h2>
-          <p className="purchase-panel-lead">
-            Kliknij „Kupuję bilet”, a wydamy kod. Płatność online dojdzie w kolejnym etapie projektu —
-            teraz liczy się miejsce i bilet.
-          </p>
-        </>
-      )}
-
+    <section>
       <button
         type="button"
-        className="button button--primary button--wide button--xl"
+        className="btn btn-primary group min-h-[64px] w-full text-[19px]"
         onClick={() => void handlePurchase()}
-        disabled={loading || isExpired}
+        disabled={loading}
         aria-busy={loading}
       >
         {loading ? (
           <>
-            <span className="spinner spinner--dark" aria-hidden="true" />
+            <span className="size-4 animate-spin rounded-full border-2 border-current border-r-transparent" aria-hidden="true" />
             Wydajemy bilet…
           </>
         ) : (
           <>
-            <TicketIcon size={20} />
-            {isExpired ? "Rezerwacja wygasła" : "Kupuję bilet"}
+            Kupuję bilet
+            <ArrowRight size={20} className="transition-transform duration-300 group-hover:translate-x-1" />
           </>
         )}
       </button>
+      <p className="mt-3 text-[14px] text-muted">
+        Bez płatności w tym etapie. Kod biletu zobaczysz od razu po kliknięciu.
+      </p>
 
-      {error && !isExpired ? (
-        <p className="purchase-error" role="alert">
+      {error ? (
+        <p className="mt-3 font-semibold text-danger" role="alert">
           {error}
         </p>
       ) : null}
-
-      {isExpired ? (
-        <p className="purchase-note">
-          <AlertTriangle size={16} />
-          Po czasie nie wydajemy biletu. Wróć do mapy i zarezerwuj miejsce ponownie.
-        </p>
-      ) : (
-        <p className="purchase-note">
-          <Mail size={16} />
-          Potwierdzenie e-mail wyślemy w tle. Bilet jest ważny od razu — nawet jeśli poczta chwilę
-          potrwa.
-        </p>
-      )}
     </section>
   );
 }

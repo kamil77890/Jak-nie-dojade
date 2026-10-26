@@ -46,6 +46,36 @@ describe("karta B — rezerwacja", () => {
     expect(duplicate.json()).toEqual({ error: "SEAT_UNAVAILABLE" });
   });
 
+  it("powtórka identycznej rezerwacji zwraca tę samą rezerwację", async () => {
+    ctx = await createTestContext();
+    const first = await reserve();
+    const [second, third] = await Promise.all([reserve(), reserve()]);
+
+    expect(first.statusCode).toBe(201);
+    expect(second.statusCode).toBe(200);
+    expect(third.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(third.json()).toEqual(first.json());
+  });
+
+  it("zły Content-Type i zły JSON to 4xx, nie 5xx", async () => {
+    ctx = await createTestContext();
+    const xml = await ctx.app.inject({
+      method: "POST",
+      url: "/api/reservations",
+      headers: { "content-type": "application/xml" },
+      payload: "<eventId>1</eventId>",
+    });
+    const broken = await ctx.app.inject({
+      method: "POST",
+      url: "/api/reservations",
+      headers: { "content-type": "application/json" },
+      payload: "{zly json",
+    });
+    expect(xml.statusCode).toBe(415);
+    expect(broken.statusCode).toBe(400);
+  });
+
   it("waliduje imię, e-mail i wymagane pola", async () => {
     ctx = await createTestContext();
 

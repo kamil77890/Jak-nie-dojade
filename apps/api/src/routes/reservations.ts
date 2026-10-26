@@ -27,9 +27,9 @@ export function registerReservationRoutes(
     { preHandler: dependencies.reservationGuards },
     async (request, reply): Promise<CreateReservationResponse> => {
       const input = parseCreateReservation(request.body);
-      const reservation = dependencies.bookings.createReservation(input);
+      const { reservation, duplicate } = dependencies.bookings.createReservation(input);
 
-      reply.code(201);
+      reply.code(duplicate ? 200 : 201);
       return {
         reservationId: reservation.id,
         expiresAt: reservation.expiresAt,

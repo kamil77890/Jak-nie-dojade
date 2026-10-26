@@ -3,13 +3,23 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#f4efe4" />
+    <meta name="theme-color" content="#ffd400" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta
       name="description"
       content="PAS S01 / Etap I — kasa biletowa w wariancie Pociąg. Wybierz kurs, zarezerwuj miejsce i odbierz kod biletu."
     />
     <title>PAS · Kasa biletowa</title>
+    <script>
+      // Motyw przed pierwszym malowaniem, żeby strona nie mignęła na biało.
+      try {
+        var saved = localStorage.getItem("pas.theme");
+        var dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme = dark ? "dark" : "light";
+      } catch (error) {
+        document.documentElement.dataset.theme = "light";
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

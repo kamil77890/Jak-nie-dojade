@@ -6,13 +6,13 @@ export function NotFoundPage() {
   useDocumentTitle("Nie ma takiej strony");
 
   return (
-    <div className="page page--narrow">
+    <div className="mx-auto max-w-[760px] px-4 py-16 sm:px-8">
       <EmptyPanel
         title="Ten peron nie istnieje"
-        message="Adres prowadzi donikąd. Wróć do rozkładu i wybierz kurs."
+        message="Adres prowadzi donikąd. Wróć do odjazdów i wybierz kurs."
         action={
-          <Link className="button button--primary" to="/">
-            Wróć do rozkładu
+          <Link className="btn btn-primary" to="/" viewTransition>
+            Wróć do odjazdów
           </Link>
         }
       />

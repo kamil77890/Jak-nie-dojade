@@ -1,4 +1,6 @@
+import { timingSafeEqual } from "node:crypto";
 import cors from "@fastify/cors";
+import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { BookingService } from "./booking";
 import { EventCatalog } from "./catalog";
@@ -9,7 +11,7 @@ import {
   mergeConfig,
 } from "./config";
 import { type Db, openDatabase } from "./db";
-import { BusyError, HttpError, RateLimitedError } from "./errors";
+import { BusyError, HttpError, RateLimitedError, UnauthorizedError } from "./errors";
 import { GuardState, addLease, releaseLeases } from "./guards";
 import { JobQueue } from "./jobs";
 import { HttpMailer, MailAdmin, type Mailer } from "./mail";
@@ -94,6 +96,55 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     logger: options.logger ?? false,
     bodyLimit: 32 * 1024,
     disableRequestLogging: true,
+    trustProxy: config.trustProxy,
+  });
+
+  // Handlery błędów muszą być ustawione przed pierwszym `await app.register(...)` —
+  // trasy zarejestrowane wcześniej zapamiętują domyślny handler Fastify
+  // (inna koperta błędu i 429 bez Retry-After).
+  app.setErrorHandler((error, request, reply) => {
+    if (error instanceof HttpError) {
+      if (error.retryAfter !== undefined) {
+        reply.header("retry-after", String(error.retryAfter));
+      }
+      const payload: { error: string; retryAfter?: number } = { error: error.code };
+      if (error.retryAfter !== undefined) payload.retryAfter = error.retryAfter;
+      reply.code(error.statusCode).send(payload);
+      return;
+    }
+
+    const statusCode = (error as { statusCode?: number }).statusCode;
+    // Błędy Fastify z zakresu 4xx (zły JSON, zły Content-Type, za duże body) to odmowa, nie awaria.
+    if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
+      reply.code(statusCode).send({ error: "VALIDATION_ERROR" });
+      return;
+    }
+
+    request.log.error({ err: error }, "Nieobsłużony błąd API");
+    reply.code(500).send({ error: "INTERNAL_ERROR" });
+  });
+
+  app.setNotFoundHandler((request, reply) => {
+    // Fallback SPA: trasy Reacta (/events/..., /lab) dostają index.html.
+    // /api/* i brakujące pliki (ścieżka z rozszerzeniem) zostają przy JSON 404.
+    if (config.webDistPath && isSpaRoute(request)) {
+      reply.header("cache-control", "no-cache");
+      return reply.type("text/html").sendFile("index.html");
+    }
+    return reply.code(404).send({ error: "NOT_FOUND" });
+  });
+
+  // Zakup nie ma body, ale klienci często i tak wysyłają `Content-Type: application/json`.
+  // Puste body traktujemy jak brak body zamiast odpowiadać 400.
+  const defaultJsonParser = app.getDefaultJsonParser("error", "error");
+  app.removeContentTypeParser("application/json");
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const text = typeof body === "string" ? body : body.toString("utf8");
+    if (text.trim() === "") {
+      done(null, undefined);
+      return;
+    }
+    defaultJsonParser(request, text, done);
   });
 
   await app.register(cors, { origin: true, methods: ["GET", "POST", "OPTIONS"] });
@@ -115,7 +166,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   });
 
   app.addHook("onRequest", async (request, reply) => {
-    if (!request.url.startsWith("/api") || request.url.startsWith("/api/health")) return;
+    const path = requestPath(request);
+    if (!path.startsWith("/api") || path.startsWith("/api/health")) return;
     if (request.method === "OPTIONS") return;
 
     // Load shedding: szybkie 503, zanim kolejka requestów zje cały serwer.
@@ -148,8 +200,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   });
 
   const readGuards: Guard[] = [createBulkheadGuard(readPool)];
+  // Rezerwacje odrzucone walidacją (400/413/415) oddają żeton: tester z jednego IP
+  // po serii złych requestów (B3) nie zużywa limitu potrzebnego na prawdziwe rezerwacje.
+  // 404 i 409 żetonu nie oddają — inaczej zalew nieistniejących albo zajętych miejsc
+  // (B5) nigdy nie dostałby 429.
   const reservationGuards: Guard[] = [
-    createRateLimitGuard(reservationLimiter, config.rateLimit.reservation.capacity, config, guards),
+    createRateLimitGuard(reservationLimiter, config.rateLimit.reservation.capacity, config, guards, {
+      refundStatuses: REFUNDED_STATUSES,
+    }),
     createBulkheadGuard(writePool),
   ];
   const purchaseGuards: Guard[] = [
@@ -161,6 +219,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   registerReservationRoutes(app, { bookings, reservationGuards, purchaseGuards });
 
   if (config.opsEnabled) {
+    if (config.opsToken) {
+      const opsToken = config.opsToken;
+      app.addHook("onRequest", async (request) => {
+        // Wzorzec trasy, nie surowy URL: /api/%6Fps/... trafia w tę samą trasę co /api/ops/...
+        if (!request.routeOptions.url?.startsWith("/api/ops")) return;
+        if (request.method === "OPTIONS") return;
+        if (!hasOpsToken(request, opsToken)) throw new UnauthorizedError();
+      });
+    }
+
     registerOpsRoutes(app, {
       config,
       clock,
@@ -175,35 +243,29 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     });
   }
 
+  // Healthcheck pokazuje też efektywny TTL — tak sprawdzisz tryb testowy bez panelu ops.
   app.get("/api/health", async () => ({
     ok: true,
     now: new Date(clock()).toISOString(),
+    reservationTtlSeconds: Math.round(config.ttlMs / 1000),
   }));
 
-  app.setErrorHandler((error, request, reply) => {
-    if (error instanceof HttpError) {
-      if (error.retryAfter !== undefined) {
-        reply.header("retry-after", String(error.retryAfter));
-      }
-      const payload: { error: string; retryAfter?: number } = { error: error.code };
-      if (error.retryAfter !== undefined) payload.retryAfter = error.retryAfter;
-      reply.code(error.statusCode).send(payload);
-      return;
-    }
+  // Jeden proces i jeden adres na produkcji: API serwuje też zbudowany frontend.
+  if (config.webDistPath) {
+    await app.register(fastifyStatic, {
+      root: config.webDistPath,
+      // Pliki są znane w chwili startu, więc nieznane /api/* nie wpadają w handler plików.
+      wildcard: false,
+      // Cache-Control ustawiamy sami w setHeaders.
+      cacheControl: false,
+      setHeaders: (res, filePath) => {
+        // Pliki z hashem w nazwie (assets/) można trzymać długo; index.html zawsze świeży.
+        const immutable = /[\\/]assets[\\/]/.test(filePath);
+        res.setHeader("cache-control", immutable ? "public, max-age=31536000, immutable" : "no-cache");
+      },
+    });
+  }
 
-    const statusCode = (error as { statusCode?: number }).statusCode;
-    if (statusCode === 400 || statusCode === 413) {
-      reply.code(statusCode).send({ error: "VALIDATION_ERROR" });
-      return;
-    }
-
-    request.log.error({ err: error }, "Nieobsłużony błąd API");
-    reply.code(500).send({ error: "INTERNAL_ERROR" });
-  });
-
-  app.setNotFoundHandler((_request, reply) => {
-    reply.code(404).send({ error: "NOT_FOUND" });
-  });
 
   app.addHook("onResponse", async (request) => {
     releaseLeases(request);
@@ -254,21 +316,61 @@ function createBulkheadGuard(pool: Bulkhead): Guard {
   };
 }
 
+/** Odmowy walidacji: request nie dotknął bazy, więc nie powinien zużywać limitu zapisów. */
+const REFUNDED_STATUSES: ReadonlySet<number> = new Set([400, 413, 415]);
+
 function createRateLimitGuard(
   limiter: TokenBucket,
   capacity: number,
   config: AppConfig,
   guards: GuardState,
+  options: { refundStatuses?: ReadonlySet<number> } = {},
 ): Guard {
   return async (request: FastifyRequest, reply: FastifyReply) => {
     if (!config.rateLimit.enabled) return;
-    const result = limiter.consume(request.ip);
+    const key = request.ip;
+    const result = limiter.consume(key);
     setRateLimitHeaders(reply, capacity, result);
     if (!result.allowed) {
       guards.rateLimited += 1;
       throw new RateLimitedError(result.retryAfterSeconds);
     }
+    const refundStatuses = options.refundStatuses;
+    if (refundStatuses) {
+      // Lease zwalnia się w onResponse, kiedy status odpowiedzi jest już znany.
+      addLease(request, () => {
+        if (refundStatuses.has(reply.statusCode)) limiter.refund(key);
+      });
+    }
   };
+}
+
+/** Token z `Authorization: Bearer …`; porównanie w stałym czasie. */
+function hasOpsToken(request: FastifyRequest, expected: string): boolean {
+  const header = request.headers.authorization ?? "";
+  const match = /^Bearer\s+(.+)$/i.exec(header.trim());
+  if (!match) return false;
+  const given = Buffer.from(match[1]!.trim());
+  const wanted = Buffer.from(expected);
+  return given.length === wanted.length && timingSafeEqual(given, wanted);
+}
+
+/** Ścieżka po zdekodowaniu %xx — tak, jak widzi ją router (/%61pi to też /api). */
+function requestPath(request: FastifyRequest): string {
+  const raw = request.url.split("?")[0] ?? "/";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function isSpaRoute(request: FastifyRequest): boolean {
+  if (request.method !== "GET" && request.method !== "HEAD") return false;
+  const path = requestPath(request);
+  if (path === "/api" || path.startsWith("/api/")) return false;
+  const lastSegment = path.slice(path.lastIndexOf("/") + 1);
+  return !lastSegment.includes(".");
 }
 
 function setRateLimitHeaders(
