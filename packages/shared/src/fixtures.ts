@@ -2,6 +2,8 @@ import type { Event, EventSummary, Seat, Wagon } from "./types";
 
 const SEATS_PER_WAGON = 20;
 const WAGON_NUMBERS = [5, 6] as const;
+/** Etap II, wariant Pociąg: jedna cena za miejsce na cały kurs — 8900 gr = 89 zł. */
+export const SEAT_PRICE = 8900;
 
 /**
  * Pozycja z numeru: 1 okno, 2 korytarz, 3 korytarz, 4 okno — i tak w każdym rzędzie.
@@ -25,9 +27,10 @@ function buildWagon(wagonNumber: number): Wagon {
   return { id: String(wagonNumber), number: wagonNumber, seats };
 }
 
-function buildEvent(input: Omit<Event, "wagons">): Event {
+function buildEvent(input: Omit<Event, "wagons" | "price">): Event {
   return {
     ...input,
+    price: SEAT_PRICE,
     wagons: WAGON_NUMBERS.map(buildWagon),
   };
 }

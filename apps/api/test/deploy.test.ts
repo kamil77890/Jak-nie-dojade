@@ -5,6 +5,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { configWarnings, loadConfig } from "../src/config";
 import { createTestContext, reservationPayload, type TestContext } from "./helpers";
 
+/** Komplet zmiennych płatności — bez nich konfiguracja słusznie ostrzega. */
+const PAYMENTS_ENV = {
+  STRIPE_SECRET_KEY: "sk_test_pas",
+  STRIPE_WEBHOOK_SECRET: "whsec_pas",
+  PUBLIC_URL: "https://kasa.example.com",
+};
+
 let ctx: TestContext | undefined;
 
 afterEach(async () => {
@@ -50,7 +57,7 @@ describe("konfiguracja wdrożenia", () => {
   });
 
   it("ostrzega przy obu zmiennych TTL, TRUST_PROXY=true i otwartym ops na produkcji", () => {
-    expect(configWarnings(loadConfig({ RESERVATION_TTL_MINUTES: "2" }))).toEqual([]);
+    expect(configWarnings(loadConfig({ ...PAYMENTS_ENV, RESERVATION_TTL_MINUTES: "2" }))).toEqual([]);
 
     const conflict = loadConfig({ RESERVATION_TTL_SECONDS: "20", RESERVATION_TTL_MINUTES: "2" });
     expect(conflict.ttlMs).toBe(20_000);
@@ -58,11 +65,12 @@ describe("konfiguracja wdrożenia", () => {
     expect(configWarnings(conflict).join(" ")).toContain("RESERVATION_TTL_MINUTES");
 
     expect(configWarnings(loadConfig({ TRUST_PROXY: "true" })).join(" ")).toContain("TRUST_PROXY=1");
-    expect(configWarnings(loadConfig({ TRUST_PROXY: "1" }))).toEqual([]);
+    expect(configWarnings(loadConfig({ ...PAYMENTS_ENV, TRUST_PROXY: "1" }))).toEqual([]);
 
     const openOps = loadConfig({ NODE_ENV: "production", OPS_ENABLED: "true" });
     expect(configWarnings(openOps).join(" ")).toContain("OPS_TOKEN");
     const tokenOps = loadConfig({
+      ...PAYMENTS_ENV,
       NODE_ENV: "production",
       OPS_ENABLED: "true",
       OPS_TOKEN: "sekret",
@@ -77,7 +85,21 @@ describe("konfiguracja wdrożenia", () => {
 
     const prodDefault = configWarnings(loadConfig({ NODE_ENV: "production" })).join(" ");
     expect(prodDefault).toContain("domyślnym TTL 15 min");
-    expect(configWarnings(loadConfig({ NODE_ENV: "production", RESERVATION_TTL_MINUTES: "2" }))).toEqual([]);
+    expect(
+      configWarnings(loadConfig({ ...PAYMENTS_ENV, NODE_ENV: "production", RESERVATION_TTL_MINUTES: "2" })),
+    ).toEqual([]);
+  });
+
+  it("ostrzega o wyłączonych płatnościach, kluczu live i PUBLIC_URL na localhost w produkcji", () => {
+    expect(configWarnings(loadConfig({})).join(" ")).toContain("Płatności są wyłączone");
+
+    const live = configWarnings(loadConfig({ ...PAYMENTS_ENV, STRIPE_SECRET_KEY: "sk_live_123" })).join(" ");
+    expect(live).toContain("nie jest kluczem testowym");
+
+    const localhost = configWarnings(
+      loadConfig({ ...PAYMENTS_ENV, NODE_ENV: "production", RESERVATION_TTL_MINUTES: "2", PUBLIC_URL: "" }),
+    ).join(" ");
+    expect(localhost).toContain("PUBLIC_URL");
   });
 
   it("healthcheck pokazuje efektywny TTL", async () => {
@@ -88,7 +110,7 @@ describe("konfiguracja wdrożenia", () => {
 });
 
 describe("zakup z pustym body JSON", () => {
-  it("Content-Type: application/json bez body nie daje 400 — zakup przechodzi", async () => {
+  it("Content-Type: application/json bez body nie daje 400 — dochodzi do sprawdzenia płatności", async () => {
     ctx = await createTestContext();
     const created = await ctx.app.inject({
       method: "POST",
@@ -102,8 +124,9 @@ describe("zakup z pustym body JSON", () => {
       url: `/api/reservations/${reservationId}/purchase`,
       headers: { "content-type": "application/json" },
     });
-    expect(purchase.statusCode).toBe(200);
-    expect(purchase.json().code).toMatch(/^PAS-/);
+    // Body jest poprawnie puste; odmowa wynika z braku płatności (Etap II), nie z parsera.
+    expect(purchase.statusCode).toBe(402);
+    expect(purchase.json()).toEqual({ error: "PAYMENT_REQUIRED" });
 
     // Zły JSON dalej jest odmową 400, a pusta rezerwacja — błędem walidacji.
     const broken = await ctx.app.inject({

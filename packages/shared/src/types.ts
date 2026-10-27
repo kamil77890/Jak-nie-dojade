@@ -26,10 +26,19 @@ export interface Event {
   departureTime: string;
   /** Godzina przyjazdu w formacie HH:MM. */
   arrivalTime: string;
+  /** Cena miejsca na cały kurs w groszach (8900 = 89 zł). Etap II. */
+  price: number;
   wagons: Wagon[];
 }
 
 export type EventSummary = Omit<Event, "wagons">;
+
+/** Pozycja `GET /api/events`: summary + pojemność i wolne miejsca z tego samego store'u co takenSeats. */
+export interface EventListItem extends EventSummary {
+  wagonCount: number;
+  seatCount: number;
+  freeSeats: number;
+}
 
 export type ReservationStatus = "active" | "purchased" | "expired";
 
@@ -44,6 +53,8 @@ export interface Reservation {
   /** ISO 8601, UTC. */
   expiresAt: string;
   status: ReservationStatus;
+  /** Cena w groszach zapisana w chwili rezerwacji; później się nie zmienia. */
+  amount: number;
   code?: string;
 }
 
@@ -57,6 +68,24 @@ export interface CreateReservationInput {
 export interface CreateReservationResponse {
   reservationId: string;
   expiresAt: string;
+  /** Kwota do zapłaty w groszach, zamrożona w chwili rezerwacji. */
+  amount: number;
+}
+
+/** `POST /api/reservations/:id/checkout` — adres strony płatności Stripe'a. */
+export interface CheckoutResponse {
+  url: string;
+}
+
+/** Status rezerwacji widziany przez klienta w Etapie II. */
+export type PaymentStatus = "held" | "paid" | "expired";
+
+/** `GET /api/reservations/:id`. `code` jest tylko przy `paid`. */
+export interface ReservationStatusResponse {
+  status: PaymentStatus;
+  amount: number;
+  expiresAt: string;
+  code?: string;
 }
 
 export interface PurchaseResponse {
@@ -71,6 +100,8 @@ export interface ReservationView {
   seatId: string;
   customerName: string;
   email: string;
+  /** Kwota w groszach z odpowiedzi rezerwacji. */
+  amount: number;
 }
 
 export interface EventDetailResponse {
@@ -85,6 +116,11 @@ export type ApiErrorCode =
   | "SEAT_UNAVAILABLE"
   | "RESERVATION_NOT_FOUND"
   | "RESERVATION_EXPIRED"
+  | "RESERVATION_PAID"
+  | "PAYMENT_REQUIRED"
+  | "PAYMENTS_UNAVAILABLE"
+  | "IDEMPOTENCY_KEY_REQUIRED"
+  | "INVALID_SIGNATURE"
   | "RATE_LIMITED"
   | "OVERLOADED"
   | "BUSY"

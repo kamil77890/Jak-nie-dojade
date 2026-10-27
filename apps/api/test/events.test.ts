@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { EventDetailResponse, EventSummary } from "@pas/shared";
-import { createTestContext, type TestContext } from "./helpers";
+import type { EventDetailResponse, EventListItem, EventSummary } from "@pas/shared";
+import { createTestContext, reservationPayload, type TestContext } from "./helpers";
 
 let ctx: TestContext;
 
@@ -22,6 +22,20 @@ describe("karta A — wydarzenia i mapa", () => {
       departureTime: "08:10",
     });
     expect(events[0]).not.toHaveProperty("wagons");
+  });
+
+  it("liczy wagony, miejsca i wolne miejsca z tego samego store'u co takenSeats", async () => {
+    ctx = await createTestContext();
+    const list = async () =>
+      (await ctx.app.inject({ method: "GET", url: "/api/events" })).json<EventListItem[]>()[0]!;
+
+    expect(await list()).toMatchObject({ wagonCount: 2, seatCount: 40, freeSeats: 40 });
+
+    await ctx.app.inject({ method: "POST", url: "/api/reservations", payload: reservationPayload() });
+    expect((await list()).freeSeats).toBe(39);
+
+    ctx.advance(ctx.services.config.ttlMs);
+    expect((await list()).freeSeats).toBe(40);
   });
 
   it("zwraca event z wagonami i pustą listą zajętych miejsc", async () => {

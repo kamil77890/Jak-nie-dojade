@@ -180,7 +180,7 @@ export function buildTicketMail(
     text: [
       `Dzień dobry, ${reservation.customerName}!`,
       "",
-      "Twój bilet jest gotowy. Płatność online dojdzie w kolejnym etapie projektu, więc teraz liczy się kod.",
+      "Dziękujemy za płatność — Twój bilet jest gotowy.",
       "",
       `Kurs: ${details.relation}`,
       `Data: ${details.date}`,

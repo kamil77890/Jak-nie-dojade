@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveTtlFromEnv, type TtlSource } from "@pas/shared";
+import { isTestSecretKey } from "./payments";
 
 export interface BucketConfig {
   capacity: number;
@@ -33,6 +34,18 @@ export interface AppConfig {
     timeoutMs: number;
     retryAttempts: number;
     retryBaseDelayMs: number;
+    breakerFailureThreshold: number;
+    breakerResetMs: number;
+  };
+  payments: {
+    /** sk_test_… / rk_test_… z env. Nigdy nie trafia do przeglądarki ani do logów. */
+    stripeSecretKey: string | null;
+    /** whsec_… — sekret endpointu webhooka (panel Stripe albo `stripe listen`). */
+    stripeWebhookSecret: string | null;
+    /** Adres frontendu dla success_url i cancel_url Stripe'a. */
+    publicUrl: string;
+    timeoutMs: number;
+    maxNetworkRetries: number;
     breakerFailureThreshold: number;
     breakerResetMs: number;
   };
@@ -133,6 +146,15 @@ export function loadConfig(env: Env = process.env): AppConfig {
       breakerFailureThreshold: readInt(env, "MAIL_BREAKER_FAILURE_THRESHOLD", 4, 1),
       breakerResetMs: readInt(env, "MAIL_BREAKER_RESET_MS", 15_000, 100),
     },
+    payments: {
+      stripeSecretKey: env.STRIPE_SECRET_KEY?.trim() || null,
+      stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET?.trim() || null,
+      publicUrl: env.PUBLIC_URL?.trim() || "http://localhost:5173",
+      timeoutMs: readInt(env, "STRIPE_TIMEOUT_MS", 8_000, 500),
+      maxNetworkRetries: readInt(env, "STRIPE_MAX_NETWORK_RETRIES", 2, 0),
+      breakerFailureThreshold: readInt(env, "STRIPE_BREAKER_FAILURE_THRESHOLD", 5, 1),
+      breakerResetMs: readInt(env, "STRIPE_BREAKER_RESET_MS", 30_000, 100),
+    },
     worker: {
       enabled: readBool(env, "WORKER_ENABLED", true),
       intervalMs: readInt(env, "WORKER_INTERVAL_MS", 250, 25),
@@ -185,6 +207,7 @@ export function mergeConfig(base: AppConfig, override?: DeepPartial<AppConfig>):
     ...base,
     ...override,
     mail: { ...base.mail, ...override.mail },
+    payments: { ...base.payments, ...override.payments },
     worker: { ...base.worker, ...override.worker },
     overload: { ...base.overload, ...override.overload },
     rateLimit: {
@@ -228,6 +251,24 @@ export function configWarnings(config: AppConfig): string[] {
     warnings.push(
       "TRUST_PROXY=true ufa całemu X-Forwarded-For, więc klient może podrobić IP i obejść limit. " +
         "Ustaw liczbę proxy przed API, np. TRUST_PROXY=1.",
+    );
+  }
+  const { stripeSecretKey, stripeWebhookSecret } = config.payments;
+  if (!stripeSecretKey || !stripeWebhookSecret) {
+    warnings.push(
+      "Płatności są wyłączone: brak STRIPE_SECRET_KEY albo STRIPE_WEBHOOK_SECRET. " +
+        "Checkout i webhook odpowiadają 503 PAYMENTS_UNAVAILABLE.",
+    );
+  } else if (!isTestSecretKey(stripeSecretKey)) {
+    warnings.push(
+      "STRIPE_SECRET_KEY nie jest kluczem testowym (sk_test_…) — płatności są wyłączone. " +
+        "Etap II działa wyłącznie w trybie testowym Stripe'a.",
+    );
+  }
+  if (config.production && /\/\/(localhost|127\.0\.0\.1)\b/.test(config.payments.publicUrl)) {
+    warnings.push(
+      `PUBLIC_URL wskazuje ${config.payments.publicUrl} — Stripe odeśle tam klienta po płatności. ` +
+        "Ustaw publiczny adres sklepu.",
     );
   }
   if (config.opsEnabled && config.production && !config.opsToken) {

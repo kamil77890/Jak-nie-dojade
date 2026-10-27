@@ -27,10 +27,10 @@ export function TicketPage() {
       <div className="page page--narrow">
         <EmptyPanel
           title="Nie mamy biletu w tej karcie"
-          message="Bilet zapisujemy w sessionStorage po zakupie. Jeśli otworzyłeś link w nowej karcie, wróć do rezerwacji albo kup bilet jeszcze raz."
+          message="Bilet zapisujemy w sessionStorage po płatności. Sprawdź status płatności — jeśli jest opłacona, pokażemy kod."
           action={
-            <Link className="button button--primary" to="/">
-              Wróć do rozkładu
+            <Link className="button button--primary" to={`/reservations/${reservationId}/payment/success`}>
+              Sprawdź status płatności
             </Link>
           }
         />
@@ -117,7 +117,7 @@ export function TicketPage() {
           <strong>{formatSeatLabel(ticket.seatId)}</strong>
           <p>Trasa</p>
           <strong>{trainLabel(ticket.event.id)}</strong>
-          <p className="ticket-stub-bottom">PAS / S01 / ETAP I</p>
+          <p className="ticket-stub-bottom">PAS / S01 / ETAP II</p>
         </div>
       </article>
 
@@ -151,7 +151,7 @@ export function TicketPage() {
 
       <p className="ticket-footnote">
         <Shield size={15} />
-        Płatność online dojdzie w Etapie II. Ten bilet jest bezpłatną rezerwacją miejsca w demo.
+        Opłacony kartą przez Stripe w trybie testowym — żadne prawdziwe pieniądze nie zostały pobrane.
       </p>
     </div>
   );

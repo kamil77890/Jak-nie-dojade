@@ -3,6 +3,7 @@ import type { ReservationView, Ticket } from "@pas/shared";
 const RESERVATION_PREFIX = "pas.reservation.";
 const TICKET_PREFIX = "pas.ticket.";
 const PASSENGER_KEY = "pas.passenger";
+const CHECKOUT_KEY_PREFIX = "pas.checkout-key.";
 
 function read<T>(key: string): T | null {
   try {
@@ -35,6 +36,19 @@ export function saveTicket(ticket: Ticket): void {
 
 export function loadTicket(reservationId: string): Ticket | null {
   return read<Ticket>(`${TICKET_PREFIX}${reservationId}`);
+}
+
+/**
+ * Idempotency-Key płatności: jeden na rezerwację w tej karcie. Ponowne kliknięcie
+ * i odświeżenie wysyłają ten sam klucz, więc serwer odda tę samą sesję Stripe'a.
+ */
+export function checkoutKey(reservationId: string): string {
+  const key = `${CHECKOUT_KEY_PREFIX}${reservationId}`;
+  const saved = read<string>(key);
+  if (saved) return saved;
+  const created = crypto.randomUUID();
+  write(key, created);
+  return created;
 }
 
 export interface PassengerDraft {

@@ -4,7 +4,7 @@ import type {
   EventDetailResponse,
   PurchaseResponse,
 } from "@pas/shared";
-import { createTestContext, reservationPayload, type TestContext } from "./helpers";
+import { createTestContext, payReservation, reservationPayload, type TestContext } from "./helpers";
 
 let ctx: TestContext;
 
@@ -46,16 +46,18 @@ describe("karta B — rezerwacja", () => {
     expect(duplicate.json()).toEqual({ error: "SEAT_UNAVAILABLE" });
   });
 
-  it("powtórka identycznej rezerwacji zwraca tę samą rezerwację", async () => {
+  it("powtórka identycznej rezerwacji też daje 409, a pierwsza rezerwacja zostaje", async () => {
     ctx = await createTestContext();
     const first = await reserve();
     const [second, third] = await Promise.all([reserve(), reserve()]);
 
     expect(first.statusCode).toBe(201);
-    expect(second.statusCode).toBe(200);
-    expect(third.statusCode).toBe(200);
-    expect(second.json()).toEqual(first.json());
-    expect(third.json()).toEqual(first.json());
+    expect(second.statusCode).toBe(409);
+    expect(third.statusCode).toBe(409);
+    expect(second.json()).toEqual({ error: "SEAT_UNAVAILABLE" });
+
+    const detail = await ctx.app.inject({ method: "GET", url: "/api/events/ic-7310-2026-11-21" });
+    expect(detail.json<EventDetailResponse>().takenSeats.filter((seat) => seat === "5-1")).toHaveLength(1);
   });
 
   it("zły Content-Type i zły JSON to 4xx, nie 5xx", async () => {
@@ -129,37 +131,43 @@ describe("karta B — rezerwacja", () => {
 });
 
 describe("karta C — zakup", () => {
-  it("zwraca kod biletu i nie tworzy drugiego kodu przy powtórce", async () => {
+  it("bez płatności zakup daje 402 PAYMENT_REQUIRED i nie wydaje biletu", async () => {
     ctx = await createTestContext();
     const created = await reserve();
     const { reservationId } = created.json<CreateReservationResponse>();
 
-    const first = await ctx.app.inject({
+    const response = await ctx.app.inject({
       method: "POST",
       url: `/api/reservations/${reservationId}/purchase`,
     });
-    expect(first.statusCode).toBe(200);
-    const code = first.json<PurchaseResponse>().code;
+    expect(response.statusCode).toBe(402);
+    expect(response.json()).toEqual({ error: "PAYMENT_REQUIRED" });
+    expect(ctx.services.jobs.stats().total).toBe(0);
+  });
+
+  it("po płatności zwraca ten sam kod biletu i nie tworzy drugiego joba", async () => {
+    ctx = await createTestContext();
+    const created = await reserve();
+    const { reservationId } = created.json<CreateReservationResponse>();
+
+    const { code } = await payReservation(ctx, reservationId);
     expect(code).toMatch(/^PAS-[A-Z2-9]{6}$/);
 
-    const second = await ctx.app.inject({
+    const again = await ctx.app.inject({
       method: "POST",
       url: `/api/reservations/${reservationId}/purchase`,
     });
-    expect(second.statusCode).toBe(200);
-    expect(second.json<PurchaseResponse>().code).toBe(code);
+    expect(again.statusCode).toBe(200);
+    expect(again.json<PurchaseResponse>().code).toBe(code);
     expect(ctx.services.jobs.stats().total).toBe(1);
   });
 
-  it("zakup enqueue'uje job e-mail w tej samej transakcji", async () => {
+  it("płatność enqueue'uje job e-mail w tej samej transakcji", async () => {
     ctx = await createTestContext();
     const created = await reserve();
     const { reservationId } = created.json<CreateReservationResponse>();
 
-    await ctx.app.inject({
-      method: "POST",
-      url: `/api/reservations/${reservationId}/purchase`,
-    });
+    await payReservation(ctx, reservationId);
 
     const jobs = ctx.services.jobs.list(10);
     expect(jobs).toHaveLength(1);

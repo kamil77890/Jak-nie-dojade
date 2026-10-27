@@ -1,13 +1,15 @@
 import type {
+  CheckoutResponse,
   CreateReservationInput,
   CreateReservationResponse,
   EventDetailResponse,
-  EventSummary,
+  EventListItem,
   JobView,
   MailMessageView,
   OpsSnapshot,
   OpsStatus,
   PurchaseResponse,
+  ReservationStatusResponse,
 } from "@pas/shared";
 
 const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? "";
@@ -63,8 +65,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
-export function getEvents(): Promise<EventSummary[]> {
-  return request<EventSummary[]>("/api/events");
+export function getEvents(): Promise<EventListItem[]> {
+  return request<EventListItem[]>("/api/events");
 }
 
 export function getEvent(eventId: string): Promise<EventDetailResponse> {
@@ -85,6 +87,22 @@ export function purchaseReservation(reservationId: string): Promise<PurchaseResp
     `/api/reservations/${encodeURIComponent(reservationId)}/purchase`,
     { method: "POST" },
   );
+}
+
+/**
+ * Karta A: sesja Stripe Checkout. Ten sam `idempotencyKey` przy powtórce
+ * (podwójne kliknięcie, zerwane połączenie) daje tę samą sesję.
+ */
+export function startCheckout(reservationId: string, idempotencyKey: string): Promise<CheckoutResponse> {
+  return request<CheckoutResponse>(`/api/reservations/${encodeURIComponent(reservationId)}/checkout`, {
+    method: "POST",
+    headers: { "idempotency-key": idempotencyKey },
+  });
+}
+
+/** Karta C: stan rezerwacji po powrocie ze Stripe'a — held, paid albo expired. */
+export function getReservationStatus(reservationId: string): Promise<ReservationStatusResponse> {
+  return request<ReservationStatusResponse>(`/api/reservations/${encodeURIComponent(reservationId)}`);
 }
 
 export function getOpsSnapshot(): Promise<OpsSnapshot> {

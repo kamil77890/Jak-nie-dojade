@@ -1,5 +1,6 @@
 import {
   formatEventDate,
+  formatPrice,
   formatSeatLabel,
   type Event,
   type ReservationView,
@@ -163,6 +164,7 @@ export function ReservePage() {
         seatId: seat.id,
         customerName,
         email,
+        amount: created.amount,
       };
       saveReservation(view);
       navigate(`/reservations/${created.reservationId}`, { state: { reservation: view } });
@@ -187,8 +189,8 @@ export function ReservePage() {
           Miejsce <em>na Ciebie.</em>
         </h1>
         <p className="reserve-lead">
-          Rezerwujesz miejsce na kurs {event.relation}. Trzymamy je {ttl}, a potem wraca do puli
-          — bez pytań i bez opłat.
+          Rezerwujesz miejsce na kurs {event.relation}. Trzymamy je {ttl} — w tym czasie płacisz{" "}
+          {formatPrice(event.price)} kartą przez Stripe. Bez płatności miejsce wraca do puli.
         </p>
         <p className="reserve-date">{formatEventDate(event.date)}</p>
       </section>
@@ -197,7 +199,9 @@ export function ReservePage() {
         <section className="form-card">
           <div className="form-card-head">
             <p className="eyebrow">Kto jedzie?</p>
-            <p className="form-card-seat">{seatLabel}</p>
+            <p className="form-card-seat">
+              {seatLabel} · <span className="form-card-price">{formatPrice(event.price)}</span>
+            </p>
             <h2>Dane podróżnego</h2>
             <p>Potrzebujemy tylko imienia i adresu e-mail. Konto nie jest wymagane.</p>
           </div>
@@ -250,7 +254,7 @@ export function ReservePage() {
                 </p>
               ) : (
                 <p className="field-hint" id="email-hint">
-                  Na ten adres wyślemy potwierdzenie. Sam bilet dostajesz od razu na ekranie.
+                  Na ten adres wyślemy potwierdzenie. Bilet zobaczysz na ekranie zaraz po płatności.
                 </p>
               )}
             </div>
@@ -278,7 +282,7 @@ export function ReservePage() {
               </button>
               <p className="form-note">
                 <Shield size={15} />
-                Rezerwacja jest ważna {ttl}. Nie pobieramy danych karty.
+                Rezerwacja jest ważna {ttl}. Danych karty nie widzimy — płacisz na stronie Stripe'a.
               </p>
             </div>
           </form>
@@ -300,8 +304,8 @@ export function ReservePage() {
               <li>
                 <span>02</span>
                 <div>
-                  <strong>Klikniesz „Kupuję bilet”</strong>
-                  <p>Bez płatności w Etapie I. Od razu dostajesz kod.</p>
+                  <strong>Klikniesz „Zapłać {formatPrice(event.price)}”</strong>
+                  <p>Przejdziesz na stronę Stripe'a. Po zapłacie wracasz po bilet z kodem.</p>
                 </div>
               </li>
               <li>

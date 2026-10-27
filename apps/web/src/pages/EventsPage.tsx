@@ -1,9 +1,4 @@
-import {
-  DEMO_SEAT_COUNT,
-  formatDuration,
-  formatEventDate,
-  type EventSummary,
-} from "@pas/shared";
+import { formatDuration, formatEventDate, formatPrice, type EventListItem } from "@pas/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { EmptyPanel, ErrorPanel } from "../components/Feedback";
@@ -11,9 +6,13 @@ import { ArrowUpRight, Clock, Shield, Spark, Ticket } from "../components/Icons"
 import { getEvents } from "../lib/api";
 import { describeApiError } from "../lib/errors";
 import {
+  connectionsLabel,
   dayOfMonth,
+  freeSeatsLabel,
   monthShortPl,
+  seatsLabel,
   trainLabel,
+  wagonsLabel,
   weekdayPl,
   yearOfDate,
 } from "../lib/format";
@@ -23,7 +22,7 @@ import { useDocumentTitle } from "../hooks/useCountdown";
 export function EventsPage() {
   useDocumentTitle("Rozkład jazdy");
   const ttl = formatTtl(useReservationTtl());
-  const [events, setEvents] = useState<EventSummary[] | null>(null);
+  const [events, setEvents] = useState<EventListItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -49,7 +48,7 @@ export function EventsPage() {
         <div className="hero-copy">
           <p className="eyebrow">
             <span className="eyebrow-rule" aria-hidden="true" />
-            Projekt PAS · Etap I · Wariant Pociąg
+            Projekt PAS · Etap II · Wariant Pociąg
           </p>
           <h1>
             Dokąd
@@ -57,8 +56,8 @@ export function EventsPage() {
             <em>jedziemy?</em>
           </h1>
           <p className="hero-lead">
-            Wybierz kurs, zajmij miejsce i trzymaj je piętnaście minut. Bez konta, bez karty — kod
-            biletu dostajesz od razu, a miejsce wraca do puli, jeśli się rozmyślisz.
+            Wybierz kurs, zajmij miejsce i trzymaj je {ttl}. Bez konta — płacisz kartą przez Stripe,
+            a kod biletu dostajesz od razu po zapłacie. Jeśli się rozmyślisz, miejsce wraca do puli.
           </p>
           <div className="hero-actions">
             <a className="button button--primary" href="#kursy">
@@ -92,7 +91,7 @@ export function EventsPage() {
             </div>
             <div>
               <dt>Płatności</dt>
-              <dd>Etap II</dd>
+              <dd>Stripe · test</dd>
             </div>
           </dl>
           <p className="hero-card-foot">
@@ -109,7 +108,11 @@ export function EventsPage() {
             <h2 id="schedule-title">Najbliższe kursy</h2>
           </div>
           <p className="section-meta">
-            {events ? `${events.length} połączenia · ${DEMO_SEAT_COUNT} miejsc` : "Ładujemy rozkład"}
+            {events
+              ? `${connectionsLabel(events.length)} · ${seatsLabel(
+                  events.reduce((count, event) => count + event.seatCount, 0),
+                )}`
+              : "Ładujemy rozkład"}
           </p>
         </div>
 
@@ -177,9 +180,16 @@ export function EventsPage() {
                 </div>
 
                 <div className="event-meta">
-                  <span>2 wagony</span>
-                  <span>40 miejsc</span>
-                  <span className="event-meta-highlight">wolne</span>
+                  <span className="event-price">{formatPrice(event.price)}</span>
+                  <span>{wagonsLabel(event.wagonCount)}</span>
+                  <span>{seatsLabel(event.seatCount)}</span>
+                  <span
+                    className={`event-meta-highlight ${
+                      event.freeSeats > 0 ? "" : "event-meta-highlight--sold-out"
+                    }`}
+                  >
+                    {freeSeatsLabel(event.freeSeats)}
+                  </span>
                 </div>
 
                 <span className="event-arrow" aria-hidden="true">
@@ -214,8 +224,8 @@ export function EventsPage() {
           <article className="step-card">
             <span className="step-number">03</span>
             <Spark size={22} />
-            <h3>Odbierz kod biletu</h3>
-            <p>Klik „Kupuję bilet” wydaje kod. Potwierdzenie e-mail leci w tle przez kolejkę.</p>
+            <h3>Zapłać i odbierz kod</h3>
+            <p>Płacisz kartą na stronie Stripe'a, wracasz po bilet z kodem. E-mail leci w tle.</p>
           </article>
         </div>
       </section>

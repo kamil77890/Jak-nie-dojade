@@ -1,4 +1,4 @@
-import type { EventDetailResponse } from "@pas/shared";
+import type { EventDetailResponse, EventListItem } from "@pas/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { BookingService } from "../booking";
 import type { EventCatalog } from "../catalog";
@@ -16,8 +16,17 @@ export function registerEventRoutes(
   app: FastifyInstance,
   dependencies: EventRouteDependencies,
 ): void {
-  app.get("/api/events", { preHandler: dependencies.readGuards }, async () => {
-    return dependencies.catalog.list();
+  app.get("/api/events", { preHandler: dependencies.readGuards }, async (): Promise<EventListItem[]> => {
+    return dependencies.catalog.list().map((summary) => {
+      const wagons = dependencies.catalog.getEvent(summary.id)?.wagons ?? [];
+      const seatCount = wagons.reduce((count, wagon) => count + wagon.seats.length, 0);
+      return {
+        ...summary,
+        wagonCount: wagons.length,
+        seatCount,
+        freeSeats: seatCount - dependencies.bookings.takenSeats(summary.id).length,
+      };
+    });
   });
 
   app.get<{ Params: { id: string } }>(

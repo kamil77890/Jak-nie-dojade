@@ -1,8 +1,8 @@
-# PAS / S01 / Etap I — kasa biletowa
+# PAS / S01 / Etap II — kasa biletowa z płatnością Stripe
 
-Kasa biletowa w wariancie **Pociąg**: rozkład jazdy, mapa wagonu, rezerwacja miejsca na 15 minut i bilet z kodem. Bez logowania i bez płatności online — dokładnie w zakresie Etapu I.
+Kasa biletowa w wariancie **Pociąg**: rozkład jazdy, mapa wagonu, rezerwacja miejsca na 15 minut, płatność kartą przez **Stripe Checkout (tryb testowy)** i bilet z kodem. Bez logowania.
 
-Projekt realizuje plan z `Plan_Etapu_I_Pociag.pdf` (karty A, B, C) i dokłada praktyki z lekcji **E04–E06**:
+Etap I realizuje plan z `Plan_Etapu_I_Pociag.pdf` (karty A, B, C). Etap II dokłada płatność: karta A — Checkout, karta B — webhook, karta C — powrót do sklepu (szczegóły i lista zagrożeń w [`CONTRACT.md` §10](CONTRACT.md#10-etap-ii--płatność-stripe-checkout)). Całość dokłada praktyki z lekcji **E04–E06**:
 
 - **E04 — gdy zależność pada:** timeout, retry, circuit breaker, fallback i łagodna degradacja,
 - **E05 — przeciążenie:** rate limiting, load shedding i bulkhead,
@@ -33,6 +33,41 @@ Build produkcyjny możesz obejrzeć lokalnie bez dodatkowej konfiguracji:
 pnpm build
 pnpm preview   # web na http://localhost:4173
 ```
+
+## Płatności Stripe (Etap II)
+
+Stripe działa **wyłącznie w trybie testowym** — żadne prawdziwe pieniądze nie są pobierane. Bez kluczy aplikacja działa, ale „Zapłać” odpowiada `503 PAYMENTS_UNAVAILABLE`.
+
+1. W [panelu Stripe](https://dashboard.stripe.com/test/apikeys) (tryb testowy / sandbox) skopiuj **Secret key** `sk_test_…`. Klucz publiczny `pk_test_…` nie jest potrzebny: Checkout działa przez przekierowanie, przeglądarka nie dotyka Stripe.js.
+2. Zainstaluj [Stripe CLI](https://docs.stripe.com/stripe-cli), zaloguj się i przekieruj webhooki na API:
+
+   ```bash
+   stripe login
+   stripe listen --forward-to localhost:3001/api/webhooks/stripe
+   ```
+
+   CLI wypisze `whsec_…` — to sekret webhooka.
+3. Dopisz oba sekrety do `.env` w root repo (plik jest w `.gitignore`, nie commituj go):
+
+   ```bash
+   STRIPE_SECRET_KEY=sk_test_...
+   STRIPE_WEBHOOK_SECRET=whsec_...
+   PUBLIC_URL=http://localhost:5173
+   ```
+
+4. `pnpm dev`, zarezerwuj miejsce i kliknij **Zapłać 89 zł**.
+
+| Karta testowa | Wynik |
+| --- | --- |
+| `4242 4242 4242 4242` | płatność udana → bilet |
+| `4000 0000 0000 0002` | odmowa — zostajesz na Stripe'ie, możesz wrócić i zapłacić ponownie |
+| `4000 0025 0000 3155` | 3D Secure → po potwierdzeniu bilet |
+
+Data ważności dowolna w przyszłości, CVC dowolne trzy cyfry.
+
+Na serwerze zamiast `stripe listen` dodaj w panelu Stripe (tryb testowy) endpoint `https://<twoja-domena>/api/webhooks/stripe` ze zdarzeniami `checkout.session.completed`, `checkout.session.async_payment_succeeded` i `checkout.session.expired`, a jego sekret ustaw jako `STRIPE_WEBHOOK_SECRET`. `PUBLIC_URL` ustaw na publiczny adres sklepu. Nauczyciela dodaj w Stripe jako członka zespołu z rolą tylko do odczytu.
+
+**Idempotencja jest obowiązkowa:** `POST /api/reservations/:id/checkout` bez nagłówka `Idempotency-Key` dostaje `400`. Klient generuje jeden klucz na rezerwację, API wysyła do Stripe'a pochodny klucz przy tworzeniu sesji i przy zwrocie, a webhook księguje każde zdarzenie dokładnie raz.
 
 ## Wdrożenie: jeden proces, jeden adres
 
@@ -110,15 +145,18 @@ Mapowanie praktyk na kod i scenariusze: [`docs/PRACTICES.md`](./docs/PRACTICES.m
 
 | Metoda | Endpoint | Sukces | Odmowy |
 | --- | --- | --- | --- |
-| `GET` | `/api/events` | `200 EventSummary[]` | — |
-| `GET` | `/api/events/:id` | `200 { event, takenSeats }` | `404 EVENT_NOT_FOUND` |
-| `POST` | `/api/reservations` | `201 { reservationId, expiresAt }`; powtórka identycznej → `200`, ta sama rezerwacja | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
-| `POST` | `/api/reservations/:id/purchase` | `200 { code }` | `404`, `409 RESERVATION_EXPIRED` |
+| `GET` | `/api/events` | `200 EventListItem[]` (z `price` w groszach) | — |
+| `GET` | `/api/events/:id` | `200 { event, takenSeats }` (`event.price`) | `404 EVENT_NOT_FOUND` |
+| `POST` | `/api/reservations` | `201 { reservationId, expiresAt, amount }` | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
+| `GET` | `/api/reservations/:id` | `200 { status, amount, expiresAt, code? }` | `404 RESERVATION_NOT_FOUND` |
+| `POST` | `/api/reservations/:id/checkout` | `200 { url }` — wymaga `Idempotency-Key` | `400 IDEMPOTENCY_KEY_REQUIRED`, `404`, `409 RESERVATION_EXPIRED` / `RESERVATION_PAID`, `429`, `503 PAYMENTS_UNAVAILABLE` |
+| `POST` | `/api/webhooks/stripe` | `200 { received: true }` | `400 INVALID_SIGNATURE`, `500` (zwrot do ponowienia) |
+| `POST` | `/api/reservations/:id/purchase` | `200 { code }` tylko po płatności | `402 PAYMENT_REQUIRED`, `404`, `409 RESERVATION_EXPIRED` |
 
 Wszystkie błędy mają envelope `{ error: string }`; status HTTP niesie znaczenie.
 
-- Rezerwacja jest idempotentna: powtórzony identyczny request (ten sam kurs, miejsce, imię i e-mail, rezerwacja jeszcze aktywna) zwraca `200` z tą samą rezerwacją (`reservationId`, `expiresAt`) zamiast `409`. Dotyczy to też dwóch równoległych requestów.
-- Zakup jest idempotentny: drugi request zwraca ten sam kod i nie tworzy drugiego joba. Zakup nie ma body; `Content-Type: application/json` z pustym body też jest akceptowany.
+- Drugie zajęcie tego samego miejsca daje `409 SEAT_UNAVAILABLE` — także powtórka identycznego requestu i dwa równoległe requesty. Pierwsza rezerwacja zostaje bez zmian.
+- Bilet wydaje wyłącznie webhook Stripe'a. Księgowanie jest idempotentne: ponowna dostawa nie tworzy drugiego kodu ani joba e-mail. Spóźniona albo podwójna płatność jest automatycznie zwracana (reguły w `CONTRACT.md` §10.4).
 
 Dodatkowo, poza kontraktem:
 
@@ -142,10 +180,13 @@ Panel ops można wyłączyć przez `OPS_ENABLED=false`; przy `NODE_ENV=productio
 | E06 | Kolejka | `apps/api/src/jobs.ts` — tabela `jobs` | gotowe / retry / zrobione / DLQ |
 | E06 | Ack po pracy | `apps/api/src/worker.ts` | at-least-once + idempotencja dostawcy |
 | E06 | DLQ | `apps/api/src/jobs.ts` — limit prób | job „e-mail z biletem” w DLQ i przycisk **Ponów** |
+| E04 | Timeout + retry Stripe | `apps/api/src/payments.ts` — timeout SDK 8 s, 2 ponowienia z tym samym `Idempotency-Key` | `503 PAYMENTS_UNAVAILABLE`, rezerwacja trwa |
+| E04 | Breaker Stripe | `apps/api/src/app.ts` + `checkout.ts` — osobny bezpiecznik płatności | szybkie `503` zamiast czekania na Stripe'a |
+| E06 | Idempotencja płatności | `apps/api/src/checkout.ts` — klucz klienta, jedna otwarta sesja, `stripe_events` | podwójne kliknięcie i ponowny webhook bez skutków ubocznych |
 
-### Dlaczego e-mail, a nie płatność?
+### E-mail niekrytyczny, płatność krytyczna
 
-Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależnością w demo jest dostawca poczty. Dzięki temu widać pełną lekcję E04 bez dokładania flow płatniczego: poczta może w ogóle nie działać, a bilet i tak jest ważny. Gdy w Etapie II dojdzie płatność, wzorzec jest ten sam — tylko decyzja „krytyczna / niekrytyczna” się zmienia.
+Poczta może w ogóle nie działać, a bilet i tak jest ważny — e-mail idzie kolejką. Płatność jest zależnością **krytyczną**: bez potwierdzenia od Stripe'a biletu nie ma. Dlatego awaria Stripe'a kończy się szybkim `503` z zachowaniem rezerwacji, a wynik płatności przychodzi asynchronicznie webhookiem, który Stripe sam ponawia.
 
 ## TTL i wygasanie
 
@@ -156,19 +197,22 @@ Płatność jest poza zakresem Etapu I, więc jedyną zewnętrzną zależności�
 - Interfejs pokazuje TTL z `GET /api/health`, więc w trybie testowym pisze „2 minuty”, a nie „15 minut”.
 - `expiresAt` jest liczone na serwerze w UTC; przeglądarka tylko je pokazuje.
 - Wygaszanie jest leniwe: każdy odczyt mapy i zakup sprawdza czas. Nie ma crona.
-- Po TTL `takenSeats` nie zawiera miejsca, a zakup zwraca `409 RESERVATION_EXPIRED`.
+- Po TTL `takenSeats` nie zawiera miejsca, a checkout i zakup zwracają `409 RESERVATION_EXPIRED`.
+- Sesja Stripe'a żyje co najmniej 30 minut (wymóg Stripe'a), dłużej niż rezerwacja. Płatność po `expiresAt` jest automatycznie zwracana; płatność przed `expiresAt` z webhookiem po terminie daje bilet, o ile miejsce jest wolne.
 
 ## Testy i jakość
 
 ```bash
-pnpm test        # 90 testów: shared, API, worker, resilience, guardy, test chaosu, wdrożenie, UI kart A/B/C, E2E ekranów
+pnpm test        # 126 testów: shared, API, płatności Stripe, worker, resilience, guardy, test chaosu, wdrożenie, UI kart A/B/C, E2E ekranów
 pnpm typecheck   # TypeScript strict we wszystkich pakietach
 pnpm build       # API + mock-mail + web
 ```
 
 Testy API używają wstrzykiwanego zegara, więc wygaśnięcie TTL nie trwa 15 minut. `apps/api/test/chaos.test.ts` odtwarza szybki przebieg testera z jednego IP (B3 → B1 → B2 → kolejne rezerwacje bez `429`), zalew B5 i podrabianie `X-Forwarded-For` przy `TRUST_PROXY=1`. Testy workera pokrywają ack, retry, DLQ i przywracanie joba. Testy resilience pokrywają stany bezpiecznika, token bucket i bulkhead.
 
-Testy web (`apps/web/test`) działają w jsdom. `reservation.test.tsx` sprawdza formularz B (etykieta, walidacja, `409`), licznik (od `expiresAt`, po odświeżeniu, wygaśnięcie, powrót po zakupie) i przycisk C. `e2e.test.tsx` przechodzi ekrany A → B → C na prawdziwym API (Fastify + SQLite w pamięci przez `inject`) przy TTL = 2 min, ze wspólnym zegarem przeglądarki i API: happy path, wygaśnięcie i `409` przy zakupie.
+Testy płatności (`apps/api/test/payments.test.ts`) używają atrapy Stripe'a z tą samą semantyką `Idempotency-Key`, a webhooki podpisują prawdziwym SDK (`generateTestHeaderString`) — sprawdzają brak klucza, powtórki, równoległe kliknięcia, awarię i bezpiecznik, zły podpis, surowe body, ponowne dostawy, spóźnione i podwójne płatności ze zwrotem.
+
+Testy web (`apps/web/test`) działają w jsdom. `reservation.test.tsx` sprawdza formularz B (etykieta, walidacja, `409`), licznik (od `expiresAt`, po odświeżeniu, wygaśnięcie, powrót po zakupie) i przycisk C. `e2e.test.tsx` przechodzi ekrany A → B → C na prawdziwym API (Fastify + SQLite w pamięci przez `inject`) przy TTL = 2 min, ze wspólnym zegarem przeglądarki i API: happy path z płatnością (Checkout → podpisany webhook → strona powrotu → bilet), wygaśnięcie i `409` przy płatności.
 
 ## Konfiguracja
 
@@ -232,7 +276,7 @@ Limit rezerwacji to token bucket per IP: **40 na start i doładowanie 4 na sekun
 
 ## Co jest poza zakresem
 
-Zgodnie z planem: płatności online, logowanie, miejsca pośrednie, anulowanie rezerwacji, aktualizacja mapy w czasie rzeczywistym. Dane demo to 3 kursy × 2 wagony × 20 miejsc.
+Zgodnie z planem: logowanie, miejsca pośrednie, anulowanie rezerwacji, aktualizacja mapy w czasie rzeczywistym. Dane demo to 3 kursy × 2 wagony × 20 miejsc.
 
 ## Ograniczenia i następne kroki
 
@@ -240,4 +284,4 @@ Zgodnie z planem: płatności online, logowanie, miejsca pośrednie, anulowanie 
 - **Worker w API:** w Etapie I worker działa w procesie API. Semantyka claim/ack/lease jest już rozdzielona, więc przeniesienie do osobnego procesu lub kolejki (BullMQ, Temporal, Inngest) nie zmienia kontraktu.
 - **Idempotencja:** dostawca dostaje `Idempotency-Key = job.id`. To daje efekt exactly-once przy at-least-once dostarczaniu.
 - **Bezpieczeństwo:** panel ops jest otwarty lokalnie, a na produkcji domyślnie wyłączony albo chroniony `OPS_TOKEN`. Rate limiting używa `request.ip`; za reverse proxy ustaw `TRUST_PROXY=1` (liczbę proxy), inaczej wszyscy klienci dzielą jeden limit.
-- **Etap II:** płatność dokłada się jako osobna zależność krytyczna, z własnym timeoutem, breakerem i fallbackiem `pending` — bez zmiany modelu rezerwacji i TTL.
+- **Płatności:** sesje Stripe'a nie są aktywnie wygaszane, gdy rezerwacja wygaśnie (brak crona) — spóźniona zapłata jest zwracana z webhooka. Przy jednej instancji blokada „jedna sesja naraz” jest w pamięci procesu; przy wielu instancjach trzeba ją przenieść do bazy.
