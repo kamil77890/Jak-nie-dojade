@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { CreateReservationResponse } from "@pas/shared";
 import {
   createTestContext,
+  payReservation,
   permanentMailError,
   reservationPayload,
   transientMailError,
@@ -21,11 +22,8 @@ async function buySeat(): Promise<{ reservationId: string; code: string }> {
     payload: reservationPayload(),
   });
   const { reservationId } = created.json<CreateReservationResponse>();
-  const purchase = await ctx.app.inject({
-    method: "POST",
-    url: `/api/reservations/${reservationId}/purchase`,
-  });
-  return { reservationId, code: purchase.json<{ code: string }>().code };
+  const { code } = await payReservation(ctx, reservationId);
+  return { reservationId, code };
 }
 
 describe("worker — praca w tle (E06)", () => {

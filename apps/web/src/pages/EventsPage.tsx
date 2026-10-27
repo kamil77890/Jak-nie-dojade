@@ -1,4 +1,4 @@
-import { formatDuration, formatEventDate, type EventListItem } from "@pas/shared";
+import { formatDuration, formatEventDate, formatPrice, type EventListItem } from "@pas/shared";
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
 import { EmptyPanel, ErrorPanel } from "../components/Feedback";
@@ -48,7 +48,7 @@ export function EventsPage() {
         <div className="hero-copy">
           <p className="eyebrow">
             <span className="eyebrow-rule" aria-hidden="true" />
-            Projekt PAS · Etap I · Wariant Pociąg
+            Projekt PAS · Etap II · Wariant Pociąg
           </p>
           <h1>
             Dokąd
@@ -56,8 +56,8 @@ export function EventsPage() {
             <em>jedziemy?</em>
           </h1>
           <p className="hero-lead">
-            Wybierz kurs, zajmij miejsce i trzymaj je piętnaście minut. Bez konta, bez karty — kod
-            biletu dostajesz od razu, a miejsce wraca do puli, jeśli się rozmyślisz.
+            Wybierz kurs, zajmij miejsce i trzymaj je {ttl}. Bez konta — płacisz kartą przez Stripe,
+            a kod biletu dostajesz od razu po zapłacie. Jeśli się rozmyślisz, miejsce wraca do puli.
           </p>
           <div className="hero-actions">
             <a className="button button--primary" href="#kursy">
@@ -91,7 +91,7 @@ export function EventsPage() {
             </div>
             <div>
               <dt>Płatności</dt>
-              <dd>Etap II</dd>
+              <dd>Stripe · test</dd>
             </div>
           </dl>
           <p className="hero-card-foot">
@@ -180,6 +180,7 @@ export function EventsPage() {
                 </div>
 
                 <div className="event-meta">
+                  <span className="event-price">{formatPrice(event.price)}</span>
                   <span>{wagonsLabel(event.wagonCount)}</span>
                   <span>{seatsLabel(event.seatCount)}</span>
                   <span
@@ -223,8 +224,8 @@ export function EventsPage() {
           <article className="step-card">
             <span className="step-number">03</span>
             <Spark size={22} />
-            <h3>Odbierz kod biletu</h3>
-            <p>Klik „Kupuję bilet” wydaje kod. Potwierdzenie e-mail leci w tle przez kolejkę.</p>
+            <h3>Zapłać i odbierz kod</h3>
+            <p>Płacisz kartą na stronie Stripe'a, wracasz po bilet z kodem. E-mail leci w tle.</p>
           </article>
         </div>
       </section>

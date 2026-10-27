@@ -48,6 +48,42 @@ export class ReservationExpiredError extends HttpError {
   }
 }
 
+export class ReservationPaidError extends HttpError {
+  constructor() {
+    super(409, "RESERVATION_PAID", "Ta rezerwacja jest już opłacona.");
+  }
+}
+
+export class PaymentRequiredError extends HttpError {
+  constructor() {
+    super(402, "PAYMENT_REQUIRED", "Bilet wydajemy dopiero po płatności.");
+  }
+}
+
+export class IdempotencyKeyRequiredError extends HttpError {
+  constructor() {
+    super(
+      400,
+      "IDEMPOTENCY_KEY_REQUIRED",
+      "Nagłówek Idempotency-Key jest obowiązkowy (8–100 znaków: litery, cyfry, - i _).",
+    );
+  }
+}
+
+export class PaymentsUnavailableError extends HttpError {
+  /** Przyczyna od Stripe'a — trafia do logu serwera, nigdy do klienta. */
+  constructor(retryAfter = 5, cause?: unknown) {
+    super(503, "PAYMENTS_UNAVAILABLE", "Płatności chwilowo nie działają. Spróbuj za chwilę.", retryAfter);
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+export class InvalidSignatureError extends HttpError {
+  constructor() {
+    super(400, "INVALID_SIGNATURE", "Zły podpis webhooka.");
+  }
+}
+
 export class UnauthorizedError extends HttpError {
   constructor() {
     super(401, "UNAUTHORIZED", "Brak lub zły token panelu ops.");

@@ -5,7 +5,13 @@ import {
   type EventDetailResponse,
   type PurchaseResponse,
 } from "@pas/shared";
-import { createTestContext, reservationPayload, type TestContext } from "./helpers";
+import {
+  createTestContext,
+  payReservation,
+  reservationPayload,
+  startCheckout,
+  type TestContext,
+} from "./helpers";
 
 let ctx: TestContext;
 
@@ -51,14 +57,16 @@ describe("E2E A → B → C przy TTL = 2 min", () => {
     expect(Date.parse(expiresAt) - ctx.now()).toBe(TWO_MINUTES);
     expect(await takenSeats()).toContain("5-12");
 
+    // Etap II: bez płatności nie ma biletu.
+    expect((await purchase(reservationId)).statusCode).toBe(402);
+
     ctx.advance(TWO_MINUTES - 1_000);
-    const first = await purchase(reservationId);
-    expect(first.statusCode).toBe(200);
-    const { code } = first.json<PurchaseResponse>();
+    const { code } = await payReservation(ctx, reservationId);
     expect(code).toMatch(/^PAS-[A-Z2-9]{6}$/);
 
-    // Podwójne kliknięcie zwraca ten sam kod.
+    // Stary endpoint zakupu po płatności zwraca ten sam kod.
     const second = await purchase(reservationId);
+    expect(second.statusCode).toBe(200);
     expect(second.json<PurchaseResponse>().code).toBe(code);
 
     // Kupione miejsce zostaje zajęte także po upływie TTL.
@@ -76,6 +84,10 @@ describe("E2E A → B → C przy TTL = 2 min", () => {
     const response = await purchase(reservationId);
     expect(response.statusCode).toBe(409);
     expect(response.json()).toEqual({ error: "RESERVATION_EXPIRED" });
+
+    const checkout = await startCheckout(ctx, reservationId);
+    expect(checkout.statusCode).toBe(409);
+    expect(checkout.json()).toEqual({ error: "RESERVATION_EXPIRED" });
 
     // Ktoś inny może od razu zarezerwować to samo miejsce.
     const next = await reserve();

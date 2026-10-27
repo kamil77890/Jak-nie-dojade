@@ -2,11 +2,17 @@
 import "./jsdom-node";
 import { freezeDate, installDom, ticketField } from "./dom";
 import { EVENTS, ttlMsFromEnv } from "@pas/shared";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTestContext, type TestContext } from "../../api/test/helpers";
+import {
+  checkoutCompletedEvent,
+  createTestContext,
+  sendWebhook,
+  type TestContext,
+} from "../../api/test/helpers";
 import { App } from "../src/App";
+import { redirectTo } from "../src/components/PurchasePanel";
 
 installDom();
 
@@ -82,7 +88,7 @@ async function reserveSeat(seatId: string): Promise<void> {
 
   // Karta B: formularz z etykietą miejsca i TTL z serwera.
   await screen.findByLabelText("Imię i nazwisko");
-  expect(container.querySelector(".form-card-seat")?.textContent).toBe("Wagon 5, miejsce 12");
+  expect(container.querySelector(".form-card-seat")?.textContent).toBe("Wagon 5, miejsce 12 · 89 zł");
   fireEvent.change(screen.getByLabelText("Imię i nazwisko"), { target: { value: "Anna Kowalska" } });
   fireEvent.change(screen.getByLabelText("Adres e-mail"), { target: { value: "anna@example.com" } });
   fireEvent.click(await screen.findByRole("button", { name: /Rezerwuję na 2 minuty/ }));
@@ -100,7 +106,32 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     advance(TWO_MINUTES - 5_000);
     await waitFor(() => expect(screen.getByRole("timer").textContent).toBe("00:05"));
 
-    fireEvent.click(screen.getByRole("button", { name: /Kupuję bilet/ }));
+    // Karta A: „Zapłać 89 zł” tworzy sesję Checkout i przekierowuje na Stripe'a.
+    const assign = vi.spyOn(redirectTo, "assign").mockImplementation(() => undefined);
+    fireEvent.click(screen.getByRole("button", { name: /Zapłać 89 zł/ }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith(ctx.payments.sessions[0]!.result.url));
+    const session = ctx.payments.sessions[0]!;
+    expect(session.input).toMatchObject({ amount: 8900, currency: "pln" });
+
+    // Klient płaci u Stripe'a, Stripe wysyła podpisany webhook (karta B)…
+    const webhook = await sendWebhook(
+      ctx,
+      checkoutCompletedEvent(ctx, {
+        sessionId: session.result.id,
+        reservationId: session.input.reservationId,
+        amount: session.input.amount,
+      }),
+    );
+    expect(webhook.statusCode).toBe(200);
+
+    // …i wraca na success_url (karta C), który sam zamienia się w bilet.
+    cleanup();
+    const successPath = new URL(session.input.successUrl.replace("{CHECKOUT_SESSION_ID}", session.result.id)).pathname;
+    render(
+      <MemoryRouter initialEntries={[successPath]}>
+        <App />
+      </MemoryRouter>,
+    );
 
     const ticket = await screen.findByLabelText(/^Bilet PAS-[A-HJ-NP-Z2-9]{6}$/);
     expect(within(ticket).getByText(event.relation)).toBeTruthy();
@@ -120,7 +151,7 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     advance(TWO_MINUTES);
 
     expect(await screen.findAllByText(/Rezerwacja wygasła — miejsce wróciło do puli/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Kupuję bilet/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Zapłać/ })).toBeNull();
     expect(await takenSeats()).toEqual([]);
 
     fireEvent.click(screen.getByRole("link", { name: "Mapa wagonu" }));
@@ -128,12 +159,12 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     expect(seatButton("5-12").disabled).toBe(false);
   });
 
-  it("serwer decyduje: 409 RESERVATION_EXPIRED przy zakupie, choć licznik w przeglądarce jeszcze trwa", async () => {
+  it("serwer decyduje: 409 RESERVATION_EXPIRED przy płatności, choć licznik w przeglądarce jeszcze trwa", async () => {
     await reserveSeat("5-12");
 
     // Tylko zegar API idzie do przodu — przeglądarka nadal widzi 02:00.
     ctx.advance(TWO_MINUTES);
-    fireEvent.click(screen.getByRole("button", { name: /Kupuję bilet/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Zapłać 89 zł/ }));
 
     expect(await screen.findAllByText(/Rezerwacja wygasła — miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.getByRole("timer").textContent).toBe("00:00");

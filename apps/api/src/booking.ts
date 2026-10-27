@@ -1,11 +1,19 @@
 import { randomInt, randomUUID } from "node:crypto";
-import { isReservationActive, type CreateReservationInput, type Reservation } from "@pas/shared";
+import {
+  isReservationActive,
+  type CreateReservationInput,
+  type PaymentStatus,
+  type Reservation,
+  type ReservationStatusResponse,
+} from "@pas/shared";
 import type { EventCatalog } from "./catalog";
 import { type Db, transaction } from "./db";
 import {
   EventOrSeatNotFoundError,
+  PaymentRequiredError,
   ReservationExpiredError,
   ReservationNotFoundError,
+  ReservationPaidError,
   SeatUnavailableError,
 } from "./errors";
 import type { JobQueue } from "./jobs";
@@ -20,6 +28,8 @@ interface ReservationRow {
   expires_at: string;
   status: Reservation["status"];
   code: string | null;
+  amount: number;
+  paid_session_id: string | null;
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -29,6 +39,33 @@ export interface PurchaseResult {
   reservation: Reservation;
   duplicate: boolean;
 }
+
+/** Płatność z webhooka. `paidAt` to czas zdarzenia u Stripe'a, nie chwila dostarczenia. */
+export interface PaymentConfirmation {
+  reservationId: string;
+  sessionId: string;
+  amount: number;
+  currency: string;
+  paidAt: number;
+}
+
+/**
+ * Wynik zaksięgowania płatności. `refund` znaczy, że pieniądze przyszły,
+ * ale biletu nie wydamy — trzeba je oddać.
+ */
+export type PaymentOutcome =
+  | { kind: "paid"; code: string }
+  | { kind: "duplicate"; code: string }
+  | {
+      kind: "refund";
+      reason: "unknown_reservation" | "already_paid" | "amount_mismatch" | "late_payment" | "seat_taken";
+    };
+
+const CLIENT_STATUS: Record<Reservation["status"], PaymentStatus> = {
+  active: "held",
+  purchased: "paid",
+  expired: "expired",
+};
 
 export interface ReservationStats {
   active: number;
@@ -51,9 +88,12 @@ export class BookingService {
    * także powtórka identycznego requestu (karta B: „drugie zajęcie … daje 409”).
    */
   createReservation(input: CreateReservationInput): Reservation {
-    if (!this.catalog.getEvent(input.eventId) || !this.catalog.getSeat(input.eventId, input.seatId)) {
+    const event = this.catalog.getEvent(input.eventId);
+    if (!event || !this.catalog.getSeat(input.eventId, input.seatId)) {
       throw new EventOrSeatNotFoundError();
     }
+    // Cena zamrożona w chwili rezerwacji: zmiana cennika nie ruszy już tej kwoty.
+    const amount = event.price;
 
     const now = this.clock();
     const createdAt = new Date(now).toISOString();
@@ -77,8 +117,8 @@ export class BookingService {
         this.db
           .prepare(
             `INSERT INTO reservations
-               (id, event_id, seat_id, customer_name, email, created_at, expires_at, status, code, purchased_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL)`,
+               (id, event_id, seat_id, customer_name, email, created_at, expires_at, status, code, purchased_at, amount)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'active', NULL, NULL, ?)`,
           )
           .run(
             id,
@@ -88,6 +128,7 @@ export class BookingService {
             input.email,
             createdAt,
             expiresAt,
+            amount,
           );
       } catch (error) {
         // Unique index na (event_id, seat_id) jest ostatnią linią obrony.
@@ -104,57 +145,115 @@ export class BookingService {
         createdAt,
         expiresAt,
         status: "active",
+        amount,
       };
     });
   }
 
   /**
-   * Zakup jest idempotentny: drugi request zwraca ten sam kod i nie tworzy
-   * drugiego joba. Job e-mail powstaje w tej samej transakcji co zakup.
+   * Etap I: `POST /purchase` wydawał bilet bez płatności. Od Etapu II bilet wydaje
+   * tylko webhook Stripe'a. Endpoint zostaje dla zgodności: opłacona rezerwacja
+   * zwraca ten sam kod (idempotencja), nieopłacona dostaje 402.
    */
   purchase(reservationId: string): PurchaseResult {
-    const now = this.clock();
-    const nowIso = new Date(now).toISOString();
+    const nowIso = new Date(this.clock()).toISOString();
 
     return transaction(this.db, () => {
       this.expireStale(nowIso);
 
       const row = this.getRow(reservationId);
       if (!row) throw new ReservationNotFoundError();
-
       if (row.status === "purchased" && row.code) {
         return { code: row.code, reservation: this.mapRow(row), duplicate: true };
       }
+      if (row.status === "expired") throw new ReservationExpiredError();
+      throw new PaymentRequiredError();
+    });
+  }
 
-      const stillActive = isReservationActive(
-        { status: "active", expiresAt: row.expires_at },
-        now,
-      );
-      if (row.status !== "active" || !stillActive) {
-        if (row.status === "active") {
-          this.db
-            .prepare("UPDATE reservations SET status = 'expired' WHERE id = ?")
-            .run(reservationId);
-        }
-        throw new ReservationExpiredError();
+  /** Sprawdza, czy rezerwację można teraz opłacić. Zwraca ją, jeśli tak. */
+  assertPayable(reservationId: string): Reservation {
+    const nowIso = new Date(this.clock()).toISOString();
+
+    return transaction(this.db, () => {
+      this.expireStale(nowIso);
+
+      const row = this.getRow(reservationId);
+      if (!row) throw new ReservationNotFoundError();
+      if (row.status === "purchased") throw new ReservationPaidError();
+      if (row.status === "expired") throw new ReservationExpiredError();
+      return this.mapRow(row);
+    });
+  }
+
+  /** `GET /api/reservations/:id` — stan widziany przez klienta po powrocie ze Stripe'a. */
+  getStatus(reservationId: string): ReservationStatusResponse {
+    const nowIso = new Date(this.clock()).toISOString();
+
+    return transaction(this.db, () => {
+      this.expireStale(nowIso);
+
+      const row = this.getRow(reservationId);
+      if (!row) throw new ReservationNotFoundError();
+      return {
+        status: CLIENT_STATUS[row.status],
+        amount: row.amount,
+        expiresAt: row.expires_at,
+        ...(row.status === "purchased" && row.code ? { code: row.code } : {}),
+      };
+    });
+  }
+
+  /**
+   * Księguje płatność z webhooka w jednej transakcji: status, kod biletu i job e-mail.
+   * O tym, czy klient zdążył, decyduje czas płatności u Stripe'a. Webhook może
+   * dojść po `expiresAt`, choć klient zapłacił przed nim — wtedy bilet się należy,
+   * o ile nikt w międzyczasie nie zajął miejsca.
+   */
+  confirmPayment(payment: PaymentConfirmation): PaymentOutcome {
+    const now = this.clock();
+    const nowIso = new Date(now).toISOString();
+
+    return transaction(this.db, () => {
+      this.expireStale(nowIso);
+
+      const row = this.getRow(payment.reservationId);
+      if (!row) return { kind: "refund", reason: "unknown_reservation" };
+
+      if (row.status === "purchased" && row.code) {
+        // Ta sama sesja drugi raz to powtórka. Inna sesja to druga zapłata za to samo miejsce.
+        return row.paid_session_id === payment.sessionId
+          ? { kind: "duplicate", code: row.code }
+          : { kind: "refund", reason: "already_paid" };
+      }
+
+      if (payment.amount !== row.amount || payment.currency.toLowerCase() !== "pln") {
+        return { kind: "refund", reason: "amount_mismatch" };
+      }
+
+      if (payment.paidAt >= Date.parse(row.expires_at)) {
+        return { kind: "refund", reason: "late_payment" };
       }
 
       const code = this.generateCode();
-      this.db
-        .prepare(
-          `UPDATE reservations
-           SET status = 'purchased', code = ?, purchased_at = ?
-           WHERE id = ? AND status = 'active'`,
-        )
-        .run(code, nowIso, reservationId);
+      try {
+        this.db
+          .prepare(
+            `UPDATE reservations
+             SET status = 'purchased', code = ?, purchased_at = ?, paid_session_id = ?
+             WHERE id = ? AND status IN ('active', 'expired')`,
+          )
+          .run(code, nowIso, payment.sessionId, payment.reservationId);
+      } catch (error) {
+        // Rezerwacja wygasła leniwie, a ktoś w tym czasie zajął miejsce.
+        if (String(error).includes("UNIQUE constraint failed")) {
+          return { kind: "refund", reason: "seat_taken" };
+        }
+        throw error;
+      }
 
-      this.jobs.enqueue("send-ticket-email", { reservationId }, { now });
-
-      return {
-        code,
-        reservation: { ...this.mapRow(row), status: "purchased", code },
-        duplicate: false,
-      };
+      this.jobs.enqueue("send-ticket-email", { reservationId: payment.reservationId }, { now });
+      return { kind: "paid", code };
     });
   }
 
@@ -230,6 +329,7 @@ export class BookingService {
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       status: row.status,
+      amount: row.amount,
       ...(row.code ? { code: row.code } : {}),
     };
   }

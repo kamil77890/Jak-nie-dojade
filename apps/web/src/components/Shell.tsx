@@ -55,7 +55,7 @@ export function Shell() {
 
         <p className="topbar-note">
           <span className="status-dot" aria-hidden="true" />
-          Etap I · bez płatności
+          Etap II · Stripe (tryb testowy)
         </p>
       </header>
 
@@ -72,7 +72,7 @@ export function Shell() {
           </span>
           <div>
             <strong>Projekt PAS · S01</strong>
-            <p>Etap I / wariant Pociąg / dane demo</p>
+            <p>Etap II / wariant Pociąg / Stripe test</p>
           </div>
         </div>
 

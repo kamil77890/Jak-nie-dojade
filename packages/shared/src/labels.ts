@@ -72,3 +72,15 @@ export function formatTimeLeft(totalMinutes: number): string {
   if (minutes === 0) return `${hours} godz.`;
   return `${hours} godz. ${minutes} min`;
 }
+
+/** 8900 → "89 zł", 8950 → "89,50 zł". Kwoty w API są w groszach. */
+export function formatPrice(amount: number): string {
+  const zloty = amount / 100;
+  const whole = Number.isInteger(zloty);
+  const text = new Intl.NumberFormat("pl-PL", {
+    minimumFractionDigits: whole ? 0 : 2,
+    maximumFractionDigits: 2,
+    useGrouping: true,
+  }).format(zloty);
+  return `${text} zł`;
+}

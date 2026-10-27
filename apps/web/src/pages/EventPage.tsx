@@ -1,6 +1,7 @@
 import {
   formatDuration,
   formatEventDate,
+  formatPrice,
   formatSeatLabel,
   type EventDetailResponse,
   type Seat,
@@ -140,7 +141,9 @@ export function EventPage() {
               Karta A · {trainLabel(event.id)} · {weekdayPl(event.date)}
             </p>
             <h1>{event.relation}</h1>
-            <p className="course-sub">{formatEventDate(event.date)}</p>
+            <p className="course-sub">
+              {formatEventDate(event.date)} · <span className="course-price">{formatPrice(event.price)} za miejsce</span>
+            </p>
           </div>
 
           <div className="course-times" aria-label="Godziny kursu">
@@ -238,8 +241,8 @@ export function EventPage() {
             <p className="eyebrow">Wybór miejsca</p>
             <h2>Kliknij wolne miejsce</h2>
             <p>
-              Otworzy się formularz z numerem miejsca. Rezerwacja trzyma je {ttl} — potem wraca do
-              puli.
+              Otworzy się formularz z numerem miejsca. Rezerwacja trzyma je {ttl} — w tym czasie
+              płacisz kartą przez Stripe ({formatPrice(event.price)}), potem miejsce wraca do puli.
             </p>
             <ul className="aside-list">
               <li>
@@ -262,8 +265,8 @@ export function EventPage() {
             <p className="eyebrow">Bezpieczniki w tle</p>
             <h2>Kasa nie padnie przez e-mail</h2>
             <p>
-              Zakup i kod biletu są lokalne. Potwierdzenie idzie do kolejki, a dostawca poczty ma
-              timeout, retry i bezpiecznik.
+              Kod biletu wydajemy zaraz po potwierdzeniu płatności. E-mail idzie do kolejki, a
+              Stripe i dostawca poczty mają timeout, retry i własne bezpieczniki.
             </p>
             <Link className="text-link" to="/lab">
               Zobacz laboratorium

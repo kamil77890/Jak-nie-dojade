@@ -1,22 +1,24 @@
 import {
   formatCountdown,
   formatEventDate,
+  formatPrice,
   formatSeatLabel,
   type ReservationView,
-  type Ticket,
 } from "@pas/shared";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { EmptyPanel } from "../components/Feedback";
 import { PurchasePanel } from "../components/PurchasePanel";
 import { RouteStub } from "../components/RouteStub";
 import { ArrowLeft, Clock, Shield } from "../components/Icons";
+import { getReservationStatus } from "../lib/api";
 import { RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
 import { timeFromIso, trainLabel, weekdayPl } from "../lib/format";
 import { loadReservation, loadTicket } from "../lib/session";
 import { useCountdown, useDocumentTitle } from "../hooks/useCountdown";
 
-export function ReservationPage() {
+/** Ekran rezerwacji z płatnością. `cancelled` — klient wrócił ze Stripe'a przez cancel_url. */
+export function ReservationPage({ cancelled = false }: { cancelled?: boolean }) {
   const { reservationId = "" } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -34,6 +36,27 @@ export function ReservationPage() {
   const [ticket] = useState(() => loadTicket(reservationId));
   // 409 z serwera ma pierwszeństwo przed licznikiem w przeglądarce.
   const [serverExpired, setServerExpired] = useState(false);
+
+  const paymentPath = `/reservations/${reservationId}/payment/success`;
+
+  // Serwer jest źródłem prawdy: po „Wstecz” ze Stripe'a rezerwacja może być już
+  // opłacona (wtedy bilet) albo wygasła (wtedy bez ponownej płatności).
+  useEffect(() => {
+    if (!reservation || ticket) return;
+    let alive = true;
+    getReservationStatus(reservationId)
+      .then((current) => {
+        if (!alive) return;
+        if (current.status === "paid") navigate(paymentPath, { replace: true });
+        if (current.status === "expired") setServerExpired(true);
+      })
+      .catch(() => {
+        // Bez statusu zostaje licznik; płatność i tak sprawdzi serwer.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [reservationId, reservation, ticket, navigate, paymentPath]);
 
   const countdown = useCountdown(reservation?.expiresAt ?? new Date(0).toISOString());
   const expired = countdown.expired || serverExpired;
@@ -74,9 +97,6 @@ export function ReservationPage() {
   const urgency = expired ? "is-expired" : remainingMs < 30_000 ? "is-danger" : remainingMs < 120_000 ? "is-warning" : "";
   const progress = Math.max(0, Math.min(100, (remainingMs / totalMs) * 100));
 
-  function handlePurchased(ticket: Ticket) {
-    navigate(`/reservations/${reservationId}/ticket`, { state: { ticket } });
-  }
 
   return (
     <div className="page">
@@ -167,6 +187,10 @@ export function ReservationPage() {
                 <dd>{formatSeatLabel(reservation.seatId)}</dd>
               </div>
               <div>
+                <dt>Do zapłaty</dt>
+                <dd>{formatPrice(reservation.amount)}</dd>
+              </div>
+              <div>
                 <dt>Rezerwacja</dt>
                 <dd className="mono">{reservation.reservationId.slice(0, 8)}…</dd>
               </div>
@@ -182,7 +206,8 @@ export function ReservationPage() {
           <PurchasePanel
             reservation={reservation}
             expired={expired}
-            onPurchased={handlePurchased}
+            cancelled={cancelled}
+            onPaid={() => navigate(paymentPath)}
             onExpired={() => setServerExpired(true)}
           />
 
@@ -190,8 +215,8 @@ export function ReservationPage() {
             <p className="eyebrow">Zasada serwera</p>
             <h2>Licznik to tylko podpowiedź</h2>
             <p>
-              Przeglądarka pokazuje, ile zostało. O ważności decyduje API: zakup po czasie dostaje
-              409 i nie wydaje biletu.
+              Przeglądarka pokazuje, ile zostało. O ważności decyduje API: po czasie nie otworzy
+              płatności (409), a spóźnioną zapłatę zwróci zamiast wydać bilet.
             </p>
             <Link className="text-link" to="/lab">
               Podejrzyj kolejkę i bezpiecznik

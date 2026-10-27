@@ -4,6 +4,7 @@ import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { BookingService } from "./booking";
 import { EventCatalog } from "./catalog";
+import { CheckoutService } from "./checkout";
 import {
   type AppConfig,
   type DeepPartial,
@@ -15,10 +16,12 @@ import { BusyError, HttpError, RateLimitedError, UnauthorizedError } from "./err
 import { GuardState, addLease, releaseLeases } from "./guards";
 import { JobQueue } from "./jobs";
 import { HttpMailer, MailAdmin, type Mailer } from "./mail";
+import { isTestSecretKey, type PaymentGateway, StripeGateway } from "./payments";
 import { Bulkhead, CircuitBreaker, TokenBucket } from "./resilience";
 import { registerEventRoutes, type Guard } from "./routes/events";
 import { registerOpsRoutes } from "./routes/ops";
 import { registerReservationRoutes } from "./routes/reservations";
+import { registerWebhookRoutes } from "./routes/webhooks";
 import { TicketMailWorker } from "./worker";
 
 export type Clock = () => number;
@@ -29,6 +32,8 @@ export interface BuildAppOptions {
   clock?: Clock;
   mailer?: Mailer;
   mailAdmin?: MailAdmin;
+  /** Atrapa Stripe'a w testach. Bez niej bramka powstaje z kluczy w konfiguracji. */
+  paymentGateway?: PaymentGateway | null;
   startWorker?: boolean;
   logger?: boolean;
 }
@@ -41,6 +46,8 @@ export interface AppServices {
   jobs: JobQueue;
   bookings: BookingService;
   breaker: CircuitBreaker;
+  paymentBreaker: CircuitBreaker;
+  checkout: CheckoutService;
   worker: TicketMailWorker;
   guards: GuardState;
   mailAdmin: MailAdmin;
@@ -69,6 +76,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   const mailer = options.mailer ?? new HttpMailer(config.mail.providerUrl, config.mail.timeoutMs);
   const mailAdmin =
     options.mailAdmin ?? new MailAdmin(config.mail.controlUrl, Math.min(config.mail.timeoutMs, 500));
+
+  // Stripe to druga zależność zewnętrzna (E04): własny bezpiecznik, niezależny od poczty.
+  const paymentBreaker = new CircuitBreaker({
+    failureThreshold: config.payments.breakerFailureThreshold,
+    resetTimeoutMs: config.payments.breakerResetMs,
+    clock,
+  });
+  const paymentGateway =
+    options.paymentGateway !== undefined ? options.paymentGateway : createPaymentGateway(config);
+  const checkout = new CheckoutService({
+    db,
+    bookings,
+    catalog,
+    gateway: paymentGateway,
+    breaker: paymentBreaker,
+    publicUrl: config.payments.publicUrl,
+    clock,
+  });
 
   const readPool = new Bulkhead({
     concurrency: config.bulkhead.read.concurrency,
@@ -116,6 +141,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   // (inna koperta błędu i 429 bez Retry-After).
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {
+      if (error.cause !== undefined) {
+        request.log.warn({ err: error.cause, code: error.code }, error.message);
+      }
       if (error.retryAfter !== undefined) {
         reply.header("retry-after", String(error.retryAfter));
       }
@@ -237,7 +265,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   ];
 
   registerEventRoutes(app, { catalog, bookings, readGuards });
-  registerReservationRoutes(app, { bookings, reservationGuards, purchaseGuards });
+  registerReservationRoutes(app, { bookings, checkout, readGuards, reservationGuards, purchaseGuards });
+  await registerWebhookRoutes(app, { checkout });
 
   if (config.opsEnabled) {
     if (config.opsToken) {
@@ -317,12 +346,26 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       jobs,
       bookings,
       breaker,
+      paymentBreaker,
+      checkout,
       worker,
       guards,
       mailAdmin,
       startedAt: clock(),
     },
   };
+}
+
+/** Prawdziwy Stripe tylko z kluczem testowym i sekretem webhooka; inaczej płatności są wyłączone. */
+function createPaymentGateway(config: AppConfig): PaymentGateway | null {
+  const { stripeSecretKey, stripeWebhookSecret } = config.payments;
+  if (!stripeSecretKey || !stripeWebhookSecret || !isTestSecretKey(stripeSecretKey)) return null;
+  return new StripeGateway({
+    secretKey: stripeSecretKey,
+    webhookSecret: stripeWebhookSecret,
+    timeoutMs: config.payments.timeoutMs,
+    maxNetworkRetries: config.payments.maxNetworkRetries,
+  });
 }
 
 function createBulkheadGuard(pool: Bulkhead): Guard {

@@ -1,15 +1,20 @@
 import type {
+  CheckoutResponse,
   CreateReservationInput,
   CreateReservationResponse,
   PurchaseResponse,
+  ReservationStatusResponse,
 } from "@pas/shared";
 import type { FastifyInstance } from "fastify";
 import type { BookingService } from "../booking";
-import { ValidationError } from "../errors";
+import { type CheckoutService, isValidIdempotencyKey } from "../checkout";
+import { IdempotencyKeyRequiredError, ValidationError } from "../errors";
 import type { Guard } from "./events";
 
 interface ReservationRouteDependencies {
   bookings: BookingService;
+  checkout: CheckoutService;
+  readGuards: Guard[];
   reservationGuards: Guard[];
   purchaseGuards: Guard[];
 }
@@ -33,7 +38,31 @@ export function registerReservationRoutes(
       return {
         reservationId: reservation.id,
         expiresAt: reservation.expiresAt,
+        amount: reservation.amount,
       };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/api/reservations/:id",
+    { preHandler: dependencies.readGuards },
+    async (request): Promise<ReservationStatusResponse> => {
+      return dependencies.bookings.getStatus(readReservationId(request.params.id));
+    },
+  );
+
+  // Karta A: sesja Stripe Checkout. Idempotency-Key jest obowiązkowy — podwójne
+  // kliknięcie albo ponowienie po zerwanym połączeniu musi dać tę samą sesję.
+  app.post<{ Params: { id: string } }>(
+    "/api/reservations/:id/checkout",
+    { preHandler: dependencies.purchaseGuards },
+    async (request): Promise<CheckoutResponse> => {
+      const reservationId = readReservationId(request.params.id);
+      const header = request.headers["idempotency-key"];
+      const key = typeof header === "string" ? header.trim() : "";
+      if (!isValidIdempotencyKey(key)) throw new IdempotencyKeyRequiredError();
+
+      return dependencies.checkout.startCheckout(reservationId, key);
     },
   );
 
@@ -41,10 +70,7 @@ export function registerReservationRoutes(
     "/api/reservations/:id/purchase",
     { preHandler: dependencies.purchaseGuards },
     async (request): Promise<PurchaseResponse> => {
-      const reservationId = request.params.id?.trim();
-      if (!reservationId) throw new ValidationError("Brak identyfikatora rezerwacji.");
-
-      const result = dependencies.bookings.purchase(reservationId);
+      const result = dependencies.bookings.purchase(readReservationId(request.params.id));
       return { code: result.code };
     },
   );
@@ -72,6 +98,12 @@ function parseCreateReservation(body: unknown): CreateReservationInput {
   }
 
   return { eventId, seatId, customerName, email };
+}
+
+function readReservationId(raw: string | undefined): string {
+  const reservationId = raw?.trim();
+  if (!reservationId) throw new ValidationError("Brak identyfikatora rezerwacji.");
+  return reservationId;
 }
 
 function readString(value: unknown): string {
