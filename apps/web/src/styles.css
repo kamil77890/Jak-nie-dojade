@@ -3249,6 +3249,26 @@ svg {
     position: static;
   }
 
+  /* Jedna kolumna: płatność zaraz pod licznikiem, a nie pod biletem i szczegółami.
+     Kolejność fokusu się zgadza — bilet i szczegóły nie mają elementów interaktywnych. */
+  .reservation-layout {
+    gap: 1rem;
+  }
+
+  .reservation-main,
+  .reservation-aside {
+    display: contents;
+  }
+
+  .reservation-aside > .purchase-panel {
+    order: 1;
+  }
+
+  .reservation-main > :not(.hold-card):not(.expiry-banner),
+  .reservation-aside > :not(.purchase-panel) {
+    order: 2;
+  }
+
   .reserve-aside {
     grid-template-columns: 1fr 1fr;
   }
