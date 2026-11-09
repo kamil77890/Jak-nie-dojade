@@ -618,6 +618,11 @@
     @apply max-w-[760px];
   }
 
+  /* Powrót do odjazdów nad tytułem — większy niż „← Plan wagonu” na innych ekranach (decyzja 3B). */
+  .lab-back {
+    @apply mb-5 inline-flex min-h-11 items-center gap-2.5 text-[19px] font-bold text-ink underline-offset-4 transition-colors hover:underline;
+  }
+
   .lab-hero h1 {
     @apply text-[clamp(48px,7vw,96px)] font-extrabold leading-[0.92] tracking-[-0.02em] condensed;
   }

@@ -58,7 +58,7 @@ export function PurchasePanel({
 
   if (isExpired) {
     return (
-      <section className="space-y-4">
+      <section>
         <div className="rounded-2xl border border-danger/30 bg-danger/8 p-6" role="alert">
           <h2 className="text-[24px] font-extrabold leading-tight text-danger condensed">
             {RESERVATION_EXPIRED_MESSAGE}
@@ -71,9 +71,6 @@ export function PurchasePanel({
             Wróć do planu wagonu
           </Link>
         </div>
-        <button type="button" className="btn btn-primary min-h-[64px] w-full text-[19px]" disabled>
-          Rezerwacja wygasła
-        </button>
       </section>
     );
   }

@@ -54,6 +54,7 @@ export function TicketPage() {
   const { event } = ticket;
   const { from, to } = splitRelation(event.relation);
   const position = getSeat(event.id, ticket.seatId)?.position;
+  const [wagonNumber, seatNumber] = ticket.seatId.split("-");
 
   return (
     <div ref={root} className="mx-auto max-w-[860px] px-4 pb-24 pt-12 sm:px-8 [perspective:1400px]">
@@ -98,20 +99,29 @@ export function TicketPage() {
         </div>
 
         <dl className="grid grid-cols-2 gap-px border-y border-line bg-line sm:grid-cols-3">
-          <Cell label="Miejsce" big className="col-span-2">
-            {formatSeatLabel(ticket.seatId)}
+          <Cell label="Wagon" big>
+            {wagonNumber}
+          </Cell>
+          <Cell label="Miejsce" big>
+            {seatNumber}
+            {position ? (
+              <small className="ml-2 text-[15px] font-semibold [font-stretch:100%]">
+                {position === "window" ? "okno" : "korytarz"}
+              </small>
+            ) : null}
           </Cell>
           <Cell label="Data">
             {weekdayPl(event.date)}, <span>{formatEventDate(event.date)}</span>
           </Cell>
           <Cell label="Podróżny">{ticket.customerName}</Cell>
-          <Cell label="E-mail" className="max-sm:col-span-2 break-all">
+          <Cell label="E-mail" className="col-span-2 break-all">
             {ticket.email}
           </Cell>
           <Cell label="W podróży">{formatDuration(event.departureTime, event.arrivalTime)}</Cell>
           <Cell label="Wydano">{timeFromIso(ticket.issuedAt)}</Cell>
-          <Cell label="Położenie">{position === "window" ? "przy oknie" : position === "aisle" ? "przy korytarzu" : "—"}</Cell>
-          <Cell label="Pociąg">{trainLabel(event.id)}</Cell>
+          <Cell label="Pociąg" className="max-sm:col-span-2">
+            {trainLabel(event.id)}
+          </Cell>
         </dl>
 
         <div className="ticket-perforation flex flex-wrap items-end justify-between gap-4 px-7 pb-8 pt-7">
@@ -165,7 +175,7 @@ function Cell({
   return (
     <div className={`bg-white px-7 py-4 ${className}`}>
       <dt className="text-[14px] font-semibold text-muted">{label}</dt>
-      <dd className={big ? "mt-1 text-[clamp(30px,4.4vw,44px)] font-extrabold leading-none narrow" : "mt-1 font-semibold"}>
+      <dd className={big ? "mt-1 flex items-baseline text-[44px] font-extrabold leading-none narrow" : "mt-1 font-semibold"}>
         {children}
       </dd>
     </div>

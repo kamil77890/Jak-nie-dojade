@@ -5,6 +5,7 @@ import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
 import {
   Activity,
   AlertTriangle,
+  ArrowLeft,
   CheckCircle,
   Mail,
   Queue,
@@ -181,6 +182,10 @@ export function LabPage() {
   return (
     <div className="page lab-page">
       <section className="lab-hero">
+        <Link className="lab-back" to="/" viewTransition>
+          <ArrowLeft size={22} />
+          Odjazdy
+        </Link>
         <h1>Laboratorium niezawodności</h1>
         <p>
           Tu widać, co się dzieje, gdy dostawca poczty pada, ruch rośnie, a praca musi poczekać.

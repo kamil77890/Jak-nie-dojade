@@ -138,7 +138,9 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     expect(within(ticket).getByText("21 listopada 2026")).toBeTruthy();
     expect(within(ticket).getByText(event.departureTime)).toBeTruthy();
     expect(within(ticket).getByText(event.arrivalTime)).toBeTruthy();
-    expect(ticketField(ticket, "Miejsce")).toBe("Wagon 5, miejsce 12");
+    // Decyzja 1B: na bilecie osobno duży numer wagonu i miejsca.
+    expect(ticketField(ticket, "Wagon")).toBe("5");
+    expect(ticketField(ticket, "Miejsce")).toMatch(/^12(okno|korytarz)?$/);
 
     // Kupione miejsce zostaje zajęte także po TTL.
     advance(TWO_MINUTES * 5);
