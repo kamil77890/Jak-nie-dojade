@@ -54,8 +54,8 @@ Poprawki z `d549b5b` (ekran licznika, liczby z API, hero, błąd rezerwacji) wch
 
 ### 4. Raport końcowy i PR
 
-- [ ] Raport zbiorczy: wszystkie ekrany przed i po, cały inwentarz odhaczony, lista decyzji podjętych przez autora projektu.
-- [ ] PR `feat/new-look` → `main` **dopiero po akceptacji autora projektu**.
+- [x] Raport zbiorczy: wszystkie ekrany przed i po, cały inwentarz odhaczony, lista decyzji podjętych przez autora projektu (raport 14, poza repozytorium).
+- [x] PR `feat/new-look` → `main` **dopiero po akceptacji autora projektu** — akceptacja 09.11.2026.
 - [ ] Po merge'u: usunąć `wip/nowy-wyglad` i `nowy-wyglad`.
 
 ## Inwentarz możliwości ekranów
