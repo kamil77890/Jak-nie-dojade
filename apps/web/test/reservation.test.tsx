@@ -72,7 +72,14 @@ describe("karta A — lista kursów", () => {
     await screen.findByText("22 wolne");
     const metas = [...container.querySelectorAll(".event-meta")].map((meta) => meta.textContent);
     expect(metas).toEqual(["89 zł3 wagony60 miejsc22 wolne", "89 zł1 wagon20 miejscwyprzedane"]);
-    expect(container.querySelector(".section-meta")?.textContent).toBe("2 połączenia · 80 miejsc");
+    // Nowy wygląd: liczba połączeń i miejsc w statystykach nad listą („kursy”, „miejsc”).
+    const stats = Object.fromEntries(
+      [...container.querySelectorAll("#odjazdy dl > div")].map((stat) => [
+        stat.querySelector("dt")?.textContent,
+        stat.querySelector("dd")?.textContent,
+      ]),
+    );
+    expect(stats).toMatchObject({ kursy: "2", miejsc: "80" });
   });
 });
 

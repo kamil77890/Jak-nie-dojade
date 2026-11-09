@@ -154,7 +154,7 @@ describe("E2E A → B → C przez ekrany, TTL = 2 min", () => {
     expect(screen.queryByRole("button", { name: /^Zapłać/ })).toBeNull();
     expect(await takenSeats()).toEqual([]);
 
-    fireEvent.click(screen.getByRole("link", { name: "Mapa wagonu" }));
+    fireEvent.click(screen.getByRole("link", { name: "Plan wagonu" }));
     await waitFor(() => expect(seatButton("5-12").getAttribute("aria-label")).toMatch(/wolne$/));
     expect(seatButton("5-12").disabled).toBe(false);
   });

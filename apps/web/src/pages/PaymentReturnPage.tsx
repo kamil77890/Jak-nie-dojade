@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { EmptyPanel, ErrorPanel } from "../components/Feedback";
 import { Shield } from "../components/Icons";
+import { PurchaseSteps } from "../components/PurchaseSteps";
 import { getReservationStatus } from "../lib/api";
 import { describeApiError, RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
 import { loadReservation, saveTicket } from "../lib/session";
@@ -74,13 +75,14 @@ export function PaymentReturnPage() {
   if (status?.status === "paid" && status.code) {
     // Bilet bez danych rezerwacji (np. inna karta przeglądarki): sam kod też wystarcza przy wejściu.
     return (
-      <div className="page page--narrow">
+      <div className="mx-auto max-w-[760px] px-4 pb-24 pt-10 sm:px-8">
+        <PurchaseSteps current={5} />
         <EmptyPanel
           title="Płatność przyjęta"
           message={`Kod biletu: ${status.code}. Szczegóły biletu są w karcie przeglądarki, w której zrobiono rezerwację, i w e-mailu.`}
           action={
-            <Link className="button button--primary" to="/">
-              Wróć do rozkładu
+            <Link className="btn btn-primary" to="/" viewTransition>
+              Wróć do odjazdów
             </Link>
           }
         />
@@ -90,12 +92,13 @@ export function PaymentReturnPage() {
 
   if (status?.status === "expired") {
     return (
-      <div className="page page--narrow">
+      <div className="mx-auto max-w-[760px] px-4 pb-24 pt-10 sm:px-8">
+        <PurchaseSteps current={4} />
         <ErrorPanel
           title="Rezerwacja wygasła przed potwierdzeniem płatności"
           message={`${RESERVATION_EXPIRED_MESSAGE} Jeśli Stripe pobrał ${formatPrice(status.amount)}, zwrócimy całą kwotę automatycznie.`}
           action={
-            <Link className="button button--primary" to="/">
+            <Link className="btn btn-primary" to="/" viewTransition>
               Wybierz miejsce jeszcze raz
             </Link>
           }
@@ -107,26 +110,36 @@ export function PaymentReturnPage() {
   const slow = polls >= FAST_POLLS;
 
   return (
-    <div className="page page--narrow">
-      <section className="payment-pending" aria-live="polite" aria-busy="true">
-        <span className="spinner" aria-hidden="true" />
-        <p className="eyebrow">Karta C · powrót ze Stripe'a</p>
-        <h1>
-          Płatność <em>w toku…</em>
+    <div className="mx-auto max-w-[760px] px-4 pb-24 pt-10 sm:px-8">
+      <PurchaseSteps current={4} />
+      <section
+        className="card flex flex-col items-center px-6 py-12 text-center sm:px-12 sm:py-16"
+        aria-live="polite"
+        aria-busy="true"
+      >
+        <span
+          className="size-14 animate-spin rounded-full border-4 border-accent border-r-transparent motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+        <p className="mt-8 text-[15px] font-semibold text-muted">Powrót ze Stripe'a</p>
+        <h1 className="mt-2 text-[clamp(44px,6vw,72px)] font-extrabold leading-[0.95] tracking-[-0.02em] condensed">
+          Płatność w toku…
         </h1>
-        <p>
+        <p className="mt-4 max-w-[48ch] text-[17px] text-muted">
           {slow
             ? "Stripe potwierdza płatność dłużej niż zwykle. Nie zamykaj tej strony — bilet pojawi się tu sam."
             : "Czekamy na potwierdzenie od Stripe'a. Za chwilę ta strona sama zamieni się w bilet z kodem."}
         </p>
-        {status ? <p className="payment-pending-amount">{formatPrice(status.amount)}</p> : null}
+        {status ? (
+          <p className="mt-6 text-[clamp(36px,4vw,48px)] font-extrabold leading-none narrow">{formatPrice(status.amount)}</p>
+        ) : null}
         {error ? (
-          <p className="purchase-error" role="alert">
+          <p className="mt-4 font-semibold text-danger" role="alert">
             {error}
           </p>
         ) : null}
-        <p className="purchase-note">
-          <Shield size={16} />
+        <p className="mt-8 flex items-start gap-2 border-t border-line pt-6 text-left text-[14px] text-muted">
+          <Shield size={16} className="shrink-0" />
           Bilet wydaje serwer po podpisanym potwierdzeniu od Stripe'a, nie sama strona powrotu.
         </p>
       </section>
