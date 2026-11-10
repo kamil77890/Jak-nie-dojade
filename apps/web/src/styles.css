@@ -124,6 +124,22 @@
 @layer base {
   html {
     -webkit-text-size-adjust: 100%;
+    /* Suwak przewijania w żółtym kolorze aplikacji, na tle strony. */
+    scrollbar-color: var(--color-accent) var(--color-bg);
+  }
+
+  /* Safari nie zna scrollbar-color. */
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-bg);
+  }
+  ::-webkit-scrollbar-thumb {
+    border: 3px solid var(--color-bg);
+    border-radius: 999px;
+    background: var(--color-accent);
   }
 
   body {
