@@ -21,6 +21,20 @@ export function trainLabel(eventId: string): string {
   return `${operator.toUpperCase()} ${number}`;
 }
 
+export type TrainCategory = "ic" | "tlk" | "eip";
+
+/** "ic-7310-2026-11-21" → "ic". Kolor znacznika pociągu; nieznana kategoria zostaje neutralna. */
+export function trainCategory(eventId: string): TrainCategory | null {
+  const operator = eventId.split("-")[0];
+  return operator === "ic" || operator === "tlk" || operator === "eip" ? operator : null;
+}
+
+/** "Warszawa Wschodnia → Kraków Główny" → stacja początkowa i docelowa. */
+export function splitRelation(relation: string): { from: string; to: string } {
+  const [from = relation, to = ""] = relation.split(/\s*→\s*/);
+  return { from, to };
+}
+
 export function weekdayPl(isoDate: string): string {
   const date = new Date(`${isoDate}T12:00:00Z`);
   return new Intl.DateTimeFormat("pl-PL", { weekday: "long", timeZone: "UTC" }).format(date);
@@ -82,7 +96,10 @@ export function freeSeatsLabel(count: number): string {
 }
 
 export function seatsInWagonLabel(count: number): string {
-  if (count === 1) return "1 miejsce";
-  if (count >= 2 && count <= 4) return `${count} miejsca`;
-  return `${count} miejsc`;
+  return seatsLabel(count);
+}
+
+/** Odmiana bez liczby: "wolne miejsce", "wolne miejsca", "wolnych miejsc". */
+export function freeSeatsWord(count: number): string {
+  return pluralPl(count, "wolne miejsce", "wolne miejsca", "wolnych miejsc");
 }

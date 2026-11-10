@@ -9,13 +9,16 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router";
 import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
-import { ArrowLeft, ArrowUpRight, Clock, Refresh, Seat as SeatIcon, Shield } from "../components/Icons";
+import { ArrowLeft, ArrowRight, Refresh } from "../components/Icons";
 import { SeatMap } from "../components/SeatMap";
+import { TrainBadge } from "../components/TrainBadge";
 import { getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
-import { seatsInWagonLabel, toSummary, trainLabel, wagonsLabel, weekdayPl } from "../lib/format";
-import { formatTtl, useReservationTtl } from "../lib/ttl";
+import { freeSeatsWord, splitRelation, toSummary, weekdayPl } from "../lib/format";
 import { useDocumentTitle } from "../hooks/useCountdown";
+import { EASE, gsap, useGsap } from "../lib/motion";
+import { PurchaseSteps } from "../components/PurchaseSteps";
+import { formatTtl, useReservationTtl } from "../lib/ttl";
 
 export function EventPage() {
   const { eventId = "" } = useParams();
@@ -30,9 +33,18 @@ export function EventPage() {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [wagonId, setWagonId] = useState<string | null>(null);
   const lastLocationKey = useRef(location.key);
+  const root = useRef<HTMLDivElement>(null);
 
   useDocumentTitle(data ? data.event.relation : "Kurs");
-  const ttl = formatTtl(useReservationTtl());
+  const ttlSeconds = useReservationTtl();
+
+  useGsap(
+    root,
+    () => {
+      gsap.from(".intro", { y: 36, opacity: 0, duration: 1.2, stagger: 0.08, ease: EASE });
+    },
+    [Boolean(data)],
+  );
 
   const load = useCallback(
     async (mode: "initial" | "refresh") => {
@@ -89,22 +101,22 @@ export function EventPage() {
 
   if (loading && !data) {
     return (
-      <div className="page">
-        <LoadingBlock label="Ustawiamy peron i sprawdzamy miejsca…" />
+      <div className="mx-auto max-w-[1320px] px-4 sm:px-8">
+        <LoadingBlock label="Wczytujemy plan wagonów…" />
       </div>
     );
   }
 
   if (error || !data) {
     return (
-      <div className="page page--narrow">
+      <div className="mx-auto max-w-[760px] px-4 py-16 sm:px-8">
         <ErrorPanel
-          title="Ten kurs nie wyjechał"
-          message={error ?? "Nie znaleźliśmy tego kursu w rozkładzie."}
+          title="Nie udało się wczytać kursu"
+          message={error ?? "Tego kursu nie ma w rozkładzie."}
           onRetry={() => void load("initial")}
           action={
-            <Link className="button button--ghost" to="/">
-              Wróć do rozkładu
+            <Link className="btn btn-ghost" to="/" viewTransition>
+              Wróć do odjazdów
             </Link>
           }
         />
@@ -113,70 +125,60 @@ export function EventPage() {
   }
 
   const { event, takenSeats } = data;
+  const { from, to } = splitRelation(event.relation);
   const taken = new Set(takenSeats);
   const wagon = event.wagons.find((item) => item.id === wagonId) ?? event.wagons[0];
-  const totalSeats = event.wagons.reduce((count, item) => count + item.seats.length, 0);
-  const totalFree = event.wagons.reduce(
-    (count, item) => count + item.seats.filter((seat) => !taken.has(seat.id)).length,
-    0,
-  );
 
   function handleSeatClick(seat: Seat) {
     navigate(`/events/${event.id}/reserve/${seat.id}`, {
       state: { eventSummary: toSummary(event), seatLabel: formatSeatLabel(seat.id) },
+      viewTransition: true,
     });
   }
 
   return (
-    <div className="page">
-      <section className="course-hero">
-        <Link className="back-link" to="/">
-          <ArrowLeft size={16} />
-          Rozkład jazdy
-        </Link>
+    <div ref={root} className="mx-auto max-w-[1320px] px-4 pb-24 pt-10 sm:px-8">
+      <PurchaseSteps current={2} />
+      <Link className="inline-flex items-center gap-2 text-[15px] font-semibold text-muted transition-colors hover:text-ink" to="/" viewTransition>
+        <ArrowLeft size={16} />
+        Odjazdy
+      </Link>
 
-        <div className="course-hero-grid">
-          <div className="course-title">
-            <p className="eyebrow">
-              Karta A · {trainLabel(event.id)} · {weekdayPl(event.date)}
-            </p>
-            <h1>{event.relation}</h1>
-            <p className="course-sub">
-              {formatEventDate(event.date)} · <span className="course-price">{formatPrice(event.price)} za miejsce</span>
-            </p>
-          </div>
+      <header className="mt-8 grid gap-8 border-b border-line pb-10 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-end">
+        <div>
+          <p className="intro flex flex-wrap items-center gap-3 text-[15px] text-muted">
+            <TrainBadge eventId={event.id} />
+            <span>
+              {weekdayPl(event.date)}, {formatEventDate(event.date)}
+            </span>
+          </p>
 
-          <div className="course-times" aria-label="Godziny kursu">
-            <div>
-              <span>Odjazd</span>
-              <strong>{event.departureTime}</strong>
-            </div>
-            <span className="course-rail" aria-hidden="true">
-              <span />
-            </span>
-            <div>
-              <span>Przyjazd</span>
-              <strong>{event.arrivalTime}</strong>
-            </div>
-            <span className="course-duration">
-              <Clock size={14} />
-              {formatDuration(event.departureTime, event.arrivalTime)}
-            </span>
-          </div>
+          <h1 className="mt-6 grid gap-1" aria-label={`${event.relation}, odjazd ${event.departureTime}, przyjazd ${event.arrivalTime}`}>
+            {[
+              [event.departureTime, from],
+              [event.arrivalTime, to],
+            ].map(([time, station]) => (
+              <span key={time} className="intro grid items-baseline gap-x-6 sm:grid-cols-[minmax(170px,auto)_minmax(0,1fr)]">
+                <span className="text-[clamp(56px,8vw,104px)] font-extrabold leading-[0.95] narrow">{time}</span>
+                <span className="text-[clamp(26px,3.6vw,46px)] font-bold leading-tight condensed">{station}</span>
+              </span>
+            ))}
+          </h1>
         </div>
 
-        <div className="course-facts">
-          <span>
-            <SeatIcon size={15} />
-            {totalFree} z {totalSeats} miejsc wolnych
+        <p className="intro text-[16px] text-muted lg:text-right">
+          W podróży {formatDuration(event.departureTime, event.arrivalTime)}.
+          <br className="hidden lg:block" /> Bilet na całą trasę:{" "}
+          <strong className="event-price font-bold text-ink">{formatPrice(event.price)}</strong> za miejsce.
+        </p>
+      </header>
+
+      <div className="mt-10 flex flex-wrap items-center justify-between gap-4">
+        {/* Skład pociągu jak w schemacie PKP: lokomotywa z przodu (kierunek jazdy w lewo), dalej wagony. */}
+        <div className="train-set" role="tablist" aria-label="Wybierz wagon">
+          <span className="train-loco" aria-hidden="true">
+            <span className="train-loco-window" />
           </span>
-          <span>{wagonsLabel(event.wagons.length)} · miejsca numerowane</span>
-          <span>Bilet na całą trasę</span>
-        </div>
-      </section>
-
-      <div className="map-toolbar">
-        <div className="wagon-switch" role="tablist" aria-label="Wybierz wagon">
           {event.wagons.map((item) => {
             const free = item.seats.filter((seat) => !taken.has(seat.id)).length;
             const active = item.id === wagon?.id;
@@ -186,36 +188,47 @@ export function EventPage() {
                 type="button"
                 role="tab"
                 aria-selected={active}
-                className={`wagon-tab ${active ? "is-active" : ""}`}
+                className={`wagon-car ${active ? "is-active" : ""}`}
                 onClick={() => setWagonId(item.id)}
               >
-                <span>Wagon {item.number}</span>
-                <small>
-                  {free} / {item.seats.length} wolnych
-                </small>
+                <span className="wagon-car-windows" aria-hidden="true">
+                  <span />
+                  <span />
+                  <span />
+                  <span />
+                </span>
+                <span className="flex items-center gap-3">
+                  <span className="wagon-car-number max-sm:hidden">{item.number}</span>
+                  <span className="flex min-w-0 flex-col leading-tight">
+                    <span className="text-[15px] font-semibold">Wagon {item.number}</span>
+                    <small className={`text-[13px] ${active ? "text-bg/70 dark:text-muted" : "text-muted"}`}>
+                      {free} {freeSeatsWord(free)}
+                    </small>
+                  </span>
+                </span>
               </button>
             );
           })}
         </div>
 
-        <div className="refresh-box">
-          <span className="refresh-stamp">
+        <div className="flex items-center gap-3">
+          <span className="text-[14px] text-muted">
             {lastUpdated
-              ? `Zaktualizowano ${new Date(lastUpdated).toLocaleTimeString("pl-PL", {
+              ? `Stan z ${new Date(lastUpdated).toLocaleTimeString("pl-PL", {
                   hour: "2-digit",
                   minute: "2-digit",
                   second: "2-digit",
                 })}`
-              : "Świeże dane z serwera"}
+              : ""}
           </span>
           <button
             type="button"
-            className="button button--ghost button--small"
+            className="btn btn-ghost min-h-10 px-4 text-[14px]"
             onClick={() => void load("refresh")}
             disabled={refreshing}
             aria-busy={refreshing}
           >
-            <Refresh size={15} className={refreshing ? "spin" : ""} />
+            <Refresh size={15} className={refreshing ? "animate-spin" : ""} />
             Odśwież
           </button>
         </div>
@@ -223,61 +236,30 @@ export function EventPage() {
 
       {refreshError ? (
         <InlineAlert tone="warning">
-          Nie udało się odświeżyć mapy: {refreshError} Pokazujemy ostatni znany stan.
+          Nie udało się odświeżyć planu: {refreshError} Widzisz ostatni znany stan.
         </InlineAlert>
       ) : null}
 
-      <div className="map-layout">
-        {wagon ? (
-          <SeatMap
-            wagon={wagon}
-            takenSeats={taken}
-            onSeatClick={handleSeatClick}
-          />
-        ) : null}
+      <div className="mt-6">
+        {wagon ? <SeatMap wagon={wagon} takenSeats={taken} onSeatClick={handleSeatClick} /> : null}
+      </div>
 
-        <aside className="map-aside">
-          <section className="aside-card aside-card--accent">
-            <p className="eyebrow">Wybór miejsca</p>
-            <h2>Kliknij wolne miejsce</h2>
-            <p>
-              Otworzy się formularz z numerem miejsca. Rezerwacja trzyma je {ttl} — w tym czasie
-              płacisz kartą przez Stripe ({formatPrice(event.price)}), potem miejsce wraca do puli.
-            </p>
-            <ul className="aside-list">
-              <li>
-                <span className="ascii-seat" aria-hidden="true" />
-                Pasek przy krawędzi oznacza miejsce przy oknie.
-              </li>
-              <li>
-                <span className="ascii-seat ascii-seat--taken" aria-hidden="true" />
-                Wyszarzone miejsce jest kupione albo właśnie trzymane.
-              </li>
-              <li>
-                <Refresh size={16} />
-                Mapa odświeża się po powrocie z formularza i na focus.
-              </li>
-            </ul>
-            <p className="aside-footnote">{seatsInWagonLabel(wagon?.seats.length ?? 20)} w wagonie</p>
-          </section>
-
-          <section className="aside-card">
-            <p className="eyebrow">Bezpieczniki w tle</p>
-            <h2>Kasa nie padnie przez e-mail</h2>
-            <p>
-              Kod biletu wydajemy zaraz po potwierdzeniu płatności. E-mail idzie do kolejki, a
-              Stripe i dostawca poczty mają timeout, retry i własne bezpieczniki.
-            </p>
-            <Link className="text-link" to="/lab">
-              Zobacz laboratorium
-              <ArrowUpRight size={15} />
-            </Link>
-            <p className="aside-footnote">
-              <Shield size={14} />
-              E04 · E05 · E06
-            </p>
-          </section>
-        </aside>
+      <div className="mt-6 grid gap-6 text-[15px] text-muted md:grid-cols-2">
+        <p className="max-w-[64ch]">
+          Kliknij wolne miejsce, żeby je zarezerwować. Rezerwacja trzyma je {formatTtl(ttlSeconds)} — w tym
+          czasie płacisz kartą przez Stripe ({formatPrice(event.price)}), potem miejsce wraca do puli.
+          Zakreskowane miejsca są już kupione albo ktoś właśnie je trzyma. Plan odświeża się sam, gdy
+          wracasz na tę kartę.
+        </p>
+        <p className="max-w-[64ch]">
+          <strong className="font-semibold text-ink">Kasa nie padnie przez e-mail.</strong> Kod biletu
+          wydajemy zaraz po potwierdzeniu płatności. E-mail idzie do kolejki, a Stripe i dostawca poczty
+          mają timeout, retry i własne bezpieczniki.{" "}
+          <Link className="inline-flex items-center gap-1 font-semibold text-ink underline underline-offset-4" to="/lab" viewTransition>
+            Zobacz laboratorium
+            <ArrowRight size={14} />
+          </Link>
+        </p>
       </div>
     </div>
   );

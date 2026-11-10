@@ -43,6 +43,6 @@ describe("karta A — mapa wagonu", () => {
     const free = seatButton(html, 11);
     expect(free).not.toContain("seat--occupied");
     expect(free).not.toContain("disabled");
-    expect(html).toContain("<strong>19</strong> wolnych");
+    expect(html).toMatch(/<strong[^>]*>19<\/strong> wolnych/);
   });
 });

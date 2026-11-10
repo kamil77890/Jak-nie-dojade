@@ -72,7 +72,14 @@ describe("karta A — lista kursów", () => {
     await screen.findByText("22 wolne");
     const metas = [...container.querySelectorAll(".event-meta")].map((meta) => meta.textContent);
     expect(metas).toEqual(["89 zł3 wagony60 miejsc22 wolne", "89 zł1 wagon20 miejscwyprzedane"]);
-    expect(container.querySelector(".section-meta")?.textContent).toBe("2 połączenia · 80 miejsc");
+    // Nowy wygląd: liczba połączeń i miejsc w statystykach nad listą („kursy”, „miejsc”).
+    const stats = Object.fromEntries(
+      [...container.querySelectorAll("#odjazdy dl > div")].map((stat) => [
+        stat.querySelector("dt")?.textContent,
+        stat.querySelector("dd")?.textContent,
+      ]),
+    );
+    expect(stats).toMatchObject({ kursy: "2", miejsc: "80" });
   });
 });
 
@@ -184,7 +191,8 @@ describe("karta B — licznik", () => {
     expect(await screen.findAllByText(/Rezerwacja wygasła — miejsce wróciło do puli/)).toBeTruthy();
     expect(screen.getByRole("timer").textContent).toBe("00:00");
     expect(payButton()).toBeNull();
-    expect((screen.getByRole("button", { name: /Rezerwacja wygasła/ }) as HTMLButtonElement).disabled).toBe(true);
+    // Decyzja 2B: zamiast zablokowanego przycisku jedna akcja — powrót do planu wagonu.
+    expect(screen.getByRole("link", { name: "Wróć do planu wagonu" })).toBeTruthy();
   });
 
   it("bez danych w sessionStorage mówi, że karta nie zna rezerwacji", () => {
@@ -295,7 +303,9 @@ describe("karta C — powrót ze Stripe'a", () => {
     paid = true;
 
     const ticket = await screen.findByLabelText("Bilet PAS-7K2M9Q", undefined, { timeout: 4_000 });
-    expect(ticketField(ticket, "Miejsce")).toBe("Wagon 5, miejsce 12");
+    // Decyzja 1B: na bilecie osobno duży numer wagonu i miejsca.
+    expect(ticketField(ticket, "Wagon")).toBe("5");
+    expect(ticketField(ticket, "Miejsce")).toMatch(/^12(okno|korytarz)?$/);
     expect(window.sessionStorage.getItem("pas.ticket.res-1")).toContain("PAS-7K2M9Q");
   });
 
