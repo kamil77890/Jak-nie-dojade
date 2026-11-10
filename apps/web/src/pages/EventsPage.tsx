@@ -59,6 +59,13 @@ export function EventsPage() {
     void load();
   }, [load]);
 
+  // Lista odjazdów wydłuża stronę po wczytaniu. Bez przeliczenia przypięte zdanie
+  // „Wybierasz miejsce…” startowało i kończyło się w złym miejscu i nie zapalało się do końca.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => ScrollTrigger.refresh());
+    return () => cancelAnimationFrame(frame);
+  }, [events, error, loading]);
+
   // Choreografia hero i sekcji statycznych — raz, po zamontowaniu.
   useGsap(
     root,
@@ -346,17 +353,17 @@ export function EventsPage() {
         className="statement relative isolate flex min-h-[100svh] items-center overflow-hidden"
       >
         <img
-          src="/media/motion-light.webp"
+          src="/media/train-light.webp"
           alt=""
-          className="absolute inset-0 -z-10 size-full object-cover opacity-40 dark:hidden"
+          className="absolute inset-0 -z-10 size-full object-cover opacity-85 dark:hidden"
         />
         <img
-          src="/media/motion-dark.webp"
+          src="/media/train-dark.webp"
           alt=""
-          className="absolute inset-0 -z-10 hidden size-full object-cover opacity-50 dark:block"
+          className="absolute inset-0 -z-10 hidden size-full object-cover opacity-85 dark:block"
         />
-        <div className="absolute inset-0 -z-10 bg-gradient-to-b from-bg via-bg/70 to-bg" />
-        <p className="mx-auto max-w-[1100px] px-4 text-[clamp(32px,4.6vw,68px)] font-bold leading-[1.08] tracking-[-0.015em] sm:px-8">
+        <div className="absolute inset-0 -z-10 bg-gradient-to-b from-bg via-bg/30 to-bg" />
+        <p className="mx-auto max-w-[1100px] px-4 dark:[text-shadow:0_2px_24px_rgb(0_0_0/0.8)] text-[clamp(32px,4.6vw,68px)] font-bold leading-[1.08] tracking-[-0.015em] sm:px-8">
           {statement(formatTtl(ttlSeconds)).split(" ").map((word, index) => (
             <span
               key={index}

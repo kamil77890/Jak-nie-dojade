@@ -9,7 +9,6 @@ export function Shell() {
   const { pathname } = useLocation();
   const { theme, toggle } = useTheme();
   const [scrolled, setScrolled] = useState(false);
-  const [progress, setProgress] = useState(0);
   const onHome = pathname === "/";
   // Nad filmem w hero nawigacja jest przezroczysta i biała; potem matowa jak reszta strony.
   const overHero = onHome && !scrolled;
@@ -23,11 +22,7 @@ export function Shell() {
   }, [pathname]);
 
   useEffect(() => {
-    const onScroll = () => {
-      const max = document.documentElement.scrollHeight - window.innerHeight;
-      setScrolled(window.scrollY > 40);
-      setProgress(max > 0 ? window.scrollY / max : 0);
-    };
+    const onScroll = () => setScrolled(window.scrollY > 40);
     onScroll();
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => window.removeEventListener("scroll", onScroll);
@@ -52,12 +47,6 @@ export function Shell() {
       >
         Przejdź do treści
       </a>
-
-      <div
-        className="no-print fixed inset-x-0 top-0 z-50 h-[3px] origin-left bg-accent"
-        style={{ transform: `scaleX(${progress})` }}
-        aria-hidden="true"
-      />
 
       <header
         className={`no-print fixed inset-x-0 top-0 z-40 transition-[background-color,border-color,backdrop-filter] duration-500 ease-out-expo ${
@@ -123,7 +112,25 @@ export function Shell() {
               <a className="underline underline-offset-2 hover:text-ink" href="https://unsplash.com">
                 Unsplash
               </a>
-              . Filmy:{" "}
+              ,{" "}
+              <a
+                className="underline underline-offset-2 hover:text-ink"
+                href="https://commons.wikimedia.org/wiki/File:Abendliche_RS4_der_Nordwestbahn_im_Bahnhof_Hude_(2024).jpg"
+              >
+                JoachimKohler-HB
+              </a>{" "}
+              i{" "}
+              <a
+                className="underline underline-offset-2 hover:text-ink"
+                href="https://commons.wikimedia.org/wiki/File:Pendolino_ED250_PKP_Intercity_na_linii_kolejowej_nr_8_pod_S%C5%82omnikami_20200808_1010_3443.jpg"
+              >
+                Jakub Hałun
+              </a>{" "}
+              (Wikimedia Commons,{" "}
+              <a className="underline underline-offset-2 hover:text-ink" href="https://creativecommons.org/licenses/by-sa/4.0/deed.pl">
+                CC BY-SA 4.0
+              </a>
+              , z dodanym rozmyciem). Filmy:{" "}
               <a className="underline underline-offset-2 hover:text-ink" href="https://www.pexels.com">
                 Pexels
               </a>
