@@ -49,6 +49,9 @@ export function PaymentReturnPage() {
               customerName: view.customerName,
               email: view.email,
               issuedAt: new Date().toISOString(),
+              amount: current.amount,
+              pointsUsed: current.pointsUsed,
+              pointsEarned: current.pointsEarned,
             };
             saveTicket(ticket);
             navigate(`/reservations/${reservationId}/ticket`, { replace: true, state: { ticket } });

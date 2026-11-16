@@ -1,5 +1,5 @@
 import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
 
 /**
  * jsdom nie ma matchMedia ani scrollTo, a GSAP sięga po nie już przy imporcie,
@@ -18,13 +18,47 @@ window.matchMedia = ((query: string) => ({
 })) as typeof window.matchMedia;
 window.scrollTo = (() => undefined) as typeof window.scrollTo;
 
+/** Node 26 nie daje `localStorage` bez flagi, a jsdom bywa go pozbawiony. */
+function memoryStorage(): Storage {
+  const data = new Map<string, string>();
+  return {
+    get length() {
+      return data.size;
+    },
+    clear: () => data.clear(),
+    getItem: (key: string) => data.get(key) ?? null,
+    key: (index: number) => Array.from(data.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      data.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      data.set(key, String(value));
+    },
+  } as Storage;
+}
+
 export function installDom(): void {
+  beforeEach(() => {
+    if (!window.localStorage) {
+      Object.defineProperty(window, "localStorage", {
+        value: memoryStorage(),
+        configurable: true,
+        writable: true,
+      });
+    }
+  });
+
   afterEach(() => {
     cleanup();
     vi.useRealTimers();
+    // Czyszczenie PRZED unstubAllGlobals: inaczej storage znika razem ze stubem.
+    try {
+      window.sessionStorage?.clear();
+      window.localStorage?.clear();
+    } catch {
+      // Brak storage w danym środowisku nie może wywracać testu.
+    }
     vi.unstubAllGlobals();
-    window.sessionStorage.clear();
-    window.localStorage.clear();
   });
 }
 

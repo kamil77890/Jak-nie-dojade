@@ -1,8 +1,8 @@
-# PAS / S01 / Etap II — kasa biletowa z płatnością Stripe
+# PAS / S01 / Etap III — kasa biletowa z punktami, Stripe i Resend
 
-Kasa biletowa w wariancie **Pociąg**: rozkład jazdy, mapa wagonu, rezerwacja miejsca na 15 minut, płatność kartą przez **Stripe Checkout (tryb testowy)** i bilet z kodem. Bez logowania.
+Kasa biletowa w wariancie **Pociąg**: rozkład jazdy, mapa wagonu, rezerwacja miejsca na 15 minut, płatność kartą przez **Stripe Checkout (tryb testowy)**, punkty lojalnościowe w **Voucherify** i bilet z podsumowaniem wysyłany przez **Resend**. Bez logowania.
 
-Etap I realizuje plan z `Plan_Etapu_I_Pociag.pdf` (karty A, B, C). Etap II dokłada płatność: karta A — Checkout, karta B — webhook, karta C — powrót do sklepu (szczegóły i lista zagrożeń w [`CONTRACT.md` §10](CONTRACT.md#10-etap-ii--płatność-stripe-checkout)). Całość dokłada praktyki z lekcji **E04–E06**:
+Etap I realizuje plan z `Plan_Etapu_I_Pociag.pdf` (karty A, B, C). Etap II dokłada płatność: karta A — Checkout, karta B — webhook, karta C — powrót do sklepu (szczegóły i lista zagrożeń w [`CONTRACT.md` §10](CONTRACT.md#10-etap-ii--płatność-stripe-checkout)). Etap III dokłada program lojalnościowy: saldo w Voucherify, płacenie punktami do połowy ceny biletu i mail z podsumowaniem przez Resend ([`CONTRACT.md` §11](CONTRACT.md#11-etap-iii--punkty-lojalnościowe-voucherify-i-mail-resend)). Całość dokłada praktyki z lekcji **E04–E06**:
 
 - **E04 — gdy zależność pada:** timeout, retry, circuit breaker, fallback i łagodna degradacja,
 - **E05 — przeciążenie:** rate limiting, load shedding i bulkhead,
@@ -69,6 +69,19 @@ Na serwerze zamiast `stripe listen` dodaj w panelu Stripe (tryb testowy) endpoin
 
 **Idempotencja jest obowiązkowa:** `POST /api/reservations/:id/checkout` bez nagłówka `Idempotency-Key` dostaje `400`. Klient generuje jeden klucz na rezerwację, API wysyła do Stripe'a pochodny klucz przy tworzeniu sesji i przy zwrocie, a webhook księguje każde zdarzenie dokładnie raz.
 
+## Punkty i maile (Etap III)
+
+Punkty prowadzi **Voucherify** (projekt Sandbox), a bilet i podsumowanie wysyła **Resend**. Oba klucze są wyłącznie po stronie serwera. Bez nich aplikacja nadal działa: punkty trzyma pamięć procesu (tylko dev/test), a maile idą do lokalnego mocka z `apps/mock-mail`.
+
+1. W [Voucherify](https://app.voucherify.io) utwórz projekt Sandbox i kampanię lojalnościową (**Campaigns → Loyalty**).
+2. Skopiuj z panelu **Project settings → Application keys** parę `x-app-id` / `x-app-token` i ustaw `VOUCHERIFY_APP_ID`, `VOUCHERIFY_APP_TOKEN`, a identyfikator kampanii jako `VOUCHERIFY_CAMPAIGN_ID`. Europejskie centrum danych to `https://api.voucherify.io` (domyślne).
+3. W [Resend](https://resend.com) utwórz klucz API i ustaw `RESEND_API_KEY`. W Sandboxie możesz wysyłać z `onboarding@resend.dev` na własny adres; dla własnej domeny zweryfikuj SPF/DKIM i ustaw `RESEND_FROM`.
+4. `pnpm dev`, wpisz e-mail na ekranie rezerwacji — nowy klient dostaje 1000 punktów.
+
+Reguły: 1 punkt = 1 grosz, punktami można zapłacić **najwyżej połowę ceny biletu**, a za każdy pełny złoty zapłacony kartą klient dostaje **10 punktów**. Saldo zawsze czytamy z Voucherify; SQLite pamięta tylko mapowanie e-mail → karta i znaczniki naliczeń. Porzucona sesja Stripe zwraca punkty, a powtórka joba nie nalicza ich drugi raz.
+
+Do demo bez kont Voucherify/Resend ustaw `LOYALTY_PROVIDER=memory` i nie podawaj `RESEND_API_KEY` — testy i cała ścieżka zakupu działają wtedy lokalnie.
+
 ## Wdrożenie: jeden proces, jeden adres
 
 Na serwerze API serwuje też zbudowany frontend, więc strona i `/api` są pod tym samym adresem:
@@ -100,8 +113,8 @@ Warunek wstępny testu chaosu: `expiresAt` wypada **około 2 minut** od rezerwac
 1. Wejdź na <http://localhost:5173> i wybierz pierwszy kurs.
 2. Kliknij wolne miejsce w wagonie 5.
 3. Wpisz imię i e-mail, kliknij **Rezerwuję na 15 minut**.
-4. Zobacz licznik, kliknij **Kupuję bilet**.
-5. Odbierz bilet z kodem `PAS-XXXXXX`; potwierdzenie e-mail pojawi się w skrzynce mocka.
+4. Zobacz licznik i saldo punktów; wpisz np. `1000` w polu **Użyj punktów** — cena spadnie o 10 zł — i kliknij **Zapłać**.
+5. Odbierz bilet z kodem `PAS-XXXXXX` i podsumowaniem (kartą / punktami / zebrane punkty); potwierdzenie e-mail pojawi się w skrzynce mocka (albo w Resend, gdy ustawisz klucz).
 
 ### Demo odporności (E04 + E06)
 
@@ -123,10 +136,12 @@ apps/web (React + Vite)
    ▼
 apps/api (Fastify) ──────────────► SQLite
    │                                  ├─ reservations
-   │  HTTP + timeout/retry            └─ jobs
-   ▼
-apps/mock-mail (Fastify)         worker e-maili
-   └─ /send, /control, /messages  (ten sam proces co API w Etapie I)
+   │  HTTP + timeout/retry            ├─ checkout_sessions
+   │                                  └─ jobs
+   ├──► Stripe Checkout (płatność kartą)
+   ├──► Voucherify (saldo punktów — źródło prawdy)
+   └──► Resend (maile)  ── fallback w dev ──► apps/mock-mail
+                                                └─ /send, /control, /messages
 ```
 
 Monorepo:
@@ -134,7 +149,7 @@ Monorepo:
 | Ścieżka | Zawartość |
 | --- | --- |
 | `packages/shared` | typy, TTL, `formatSeatLabel`, `isReservationActive`, fixtures 3 kursów |
-| `apps/api` | 4 endpointy kontraktu, SQLite, kolejka, worker, limity, panel ops |
+| `apps/api` | endpointy kontraktu (kursy, rezerwacje, checkout, webhook, lojalność), SQLite, kolejka, worker, limity, panel ops |
 | `apps/web` | rozkład, mapa wagonu, formularz, licznik, bilet, laboratorium |
 | `apps/mock-mail` | osobny mock dostawcy poczty ze sterowaniem awarią |
 
@@ -148,8 +163,9 @@ Mapowanie praktyk na kod i scenariusze: [`docs/PRACTICES.md`](./docs/PRACTICES.m
 | `GET` | `/api/events` | `200 EventListItem[]` (z `price` w groszach) | — |
 | `GET` | `/api/events/:id` | `200 { event, takenSeats }` (`event.price`) | `404 EVENT_NOT_FOUND` |
 | `POST` | `/api/reservations` | `201 { reservationId, expiresAt, amount }` | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
-| `GET` | `/api/reservations/:id` | `200 { status, amount, expiresAt, code? }` | `404 RESERVATION_NOT_FOUND` |
-| `POST` | `/api/reservations/:id/checkout` | `200 { url }` — wymaga `Idempotency-Key` | `400 IDEMPOTENCY_KEY_REQUIRED`, `404`, `409 RESERVATION_EXPIRED` / `RESERVATION_PAID`, `429`, `503 PAYMENTS_UNAVAILABLE` |
+| `GET` | `/api/loyalty?email=…` | `200 { email, points }` (nowy klient: 1000) | `400 VALIDATION_ERROR`, `503 LOYALTY_UNAVAILABLE` |
+| `GET` | `/api/reservations/:id` | `200 { status, amount, expiresAt, pointsUsed, pointsEarned, code? }` | `404 RESERVATION_NOT_FOUND` |
+| `POST` | `/api/reservations/:id/checkout` | `200 { url }` — wymaga `Idempotency-Key`; opcjonalne body `{ points }` | `400 IDEMPOTENCY_KEY_REQUIRED` / `VALIDATION_ERROR`, `404`, `409 RESERVATION_EXPIRED` / `RESERVATION_PAID` / `POINTS_LIMIT_EXCEEDED` / `INSUFFICIENT_POINTS`, `429`, `503 PAYMENTS_UNAVAILABLE` / `LOYALTY_UNAVAILABLE` |
 | `POST` | `/api/webhooks/stripe` | `200 { received: true }` | `400 INVALID_SIGNATURE`, `500` (zwrot do ponowienia) |
 | `POST` | `/api/reservations/:id/purchase` | `200 { code }` tylko po płatności | `402 PAYMENT_REQUIRED`, `404`, `409 RESERVATION_EXPIRED` |
 
@@ -212,6 +228,8 @@ Testy API używają wstrzykiwanego zegara, więc wygaśnięcie TTL nie trwa 15 m
 
 Testy płatności (`apps/api/test/payments.test.ts`) używają atrapy Stripe'a z tą samą semantyką `Idempotency-Key`, a webhooki podpisują prawdziwym SDK (`generateTestHeaderString`) — sprawdzają brak klucza, powtórki, równoległe kliknięcia, awarię i bezpiecznik, zły podpis, surowe body, ponowne dostawy, spóźnione i podwójne płatności ze zwrotem.
 
+`apps/api/test/loyalty.test.ts` sprawdza bonus powitalny, płatność punktami (kwota sesji i saldo), limity połowy ceny i salda, zwrot punktów po wygasłej sesji, treść maila z podsumowaniem oraz `503` przy awarii Voucherify. Testy korzystają z pamięciowego dostawcy punktów, więc nie wychodzą do sieci.
+
 Testy web (`apps/web/test`) działają w jsdom. `reservation.test.tsx` sprawdza formularz B (etykieta, walidacja, `409`), licznik (od `expiresAt`, po odświeżeniu, wygaśnięcie, powrót po zakupie) i przycisk C. `e2e.test.tsx` przechodzi ekrany A → B → C na prawdziwym API (Fastify + SQLite w pamięci przez `inject`) przy TTL = 2 min, ze wspólnym zegarem przeglądarki i API: happy path z płatnością (Checkout → podpisany webhook → strona powrotu → bilet), wygaśnięcie i `409` przy płatności.
 
 ## Konfiguracja
@@ -230,6 +248,13 @@ Najważniejsze zmienne (pełna lista w `.env.example`):
 | `MAIL_RETRY_ATTEMPTS` | `2` | próby w jednym podejściu workera |
 | `MAIL_BREAKER_FAILURE_THRESHOLD` | `4` | ile błędów otwiera bezpiecznik |
 | `MAIL_BREAKER_RESET_MS` | `15000` | po jakim czasie próbny request |
+| `LOYALTY_PROVIDER` | `auto` | `auto` wybiera Voucherify, gdy są kompletne klucze; `memory` to fallback dev/test |
+| `VOUCHERIFY_APP_ID`, `VOUCHERIFY_APP_TOKEN` | — | para z panelu Voucherify (Sandbox) |
+| `VOUCHERIFY_CAMPAIGN_ID` | — | kampania lojalnościowa, do której trafiają karty klientów |
+| `VOUCHERIFY_API_URL` | `https://api.voucherify.io` | centrum danych Voucherify (US: `api.us.voucherify.io`) |
+| `LOYALTY_WELCOME_POINTS` | `1000` | bonus powitalny dla nowego e-maila |
+| `RESEND_API_KEY` | — | bez klucza maile idą do mocka (`MAIL_PROVIDER_URL`) |
+| `RESEND_FROM` | `PAS Kasa <onboarding@resend.dev>` | nadawca; domena musi być zweryfikowana w Resend |
 | `WORKER_MAX_ATTEMPTS` | `5` | limit podejść do joba przed DLQ |
 | `WORKER_BASE_BACKOFF_MS` | `2000` | start backoffu kolejki |
 | `LOAD_SHED_MAX_IN_FLIGHT` | `80` | próg load sheddingu; liczą się requesty z odebranym body |

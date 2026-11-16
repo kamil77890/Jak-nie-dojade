@@ -78,6 +78,7 @@ export async function createTestContext(options: {
   mailer?: FakeMailer;
   mailAdmin?: BuildAppOptions["mailAdmin"];
   payments?: FakePaymentGateway;
+  loyaltyProvider?: BuildAppOptions["loyaltyProvider"];
 } = {}): Promise<TestContext> {
   let current = Date.parse("2026-11-01T09:00:00.000Z");
   const clock = () => current;
@@ -91,6 +92,7 @@ export async function createTestContext(options: {
     mailer,
     paymentGateway: payments,
     ...(options.mailAdmin ? { mailAdmin: options.mailAdmin } : {}),
+    ...(options.loyaltyProvider ? { loyaltyProvider: options.loyaltyProvider } : {}),
     startWorker: false,
     config: {
       rateLimit: { enabled: false },

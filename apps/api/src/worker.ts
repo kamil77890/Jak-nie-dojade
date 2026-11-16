@@ -7,6 +7,7 @@ import type { BookingService } from "./booking";
 import type { EventCatalog } from "./catalog";
 import type { AppConfig } from "./config";
 import type { JobQueue, JobRecord } from "./jobs";
+import type { LoyaltyService } from "./loyalty";
 import { MailDeliveryError, type Mailer, type TicketMail } from "./mail";
 import { CircuitBreaker, CircuitOpenError, withRetry } from "./resilience";
 
@@ -16,6 +17,7 @@ interface WorkerDependencies {
   catalog: EventCatalog;
   mailer: Mailer;
   breaker: CircuitBreaker;
+  loyalty: LoyaltyService;
   config: AppConfig;
   clock: () => number;
 }
@@ -76,19 +78,31 @@ export class TicketMailWorker {
         throw new UnsupportedJobError(`Nieznane zadanie: ${job.task}`);
       }
       const message = this.compose(job);
-      await withRetry(
-        () => this.dependencies.breaker.fire(() => this.dependencies.mailer.send(message, job.id)),
-        {
-          attempts: config.mail.retryAttempts,
-          baseDelayMs: config.mail.retryBaseDelayMs,
-          shouldRetry: (error) =>
-            !(error instanceof CircuitOpenError) &&
-            (!(error instanceof MailDeliveryError) || error.retryable),
-          onRetry: (error) => {
-            this.lastError = error instanceof Error ? error.message : String(error);
+      let mailError: unknown = null;
+      try {
+        await withRetry(
+          () => this.dependencies.breaker.fire(() => this.dependencies.mailer.send(message, job.id)),
+          {
+            attempts: config.mail.retryAttempts,
+            baseDelayMs: config.mail.retryBaseDelayMs,
+            shouldRetry: (error) =>
+              !(error instanceof CircuitOpenError) &&
+              (!(error instanceof MailDeliveryError) || error.retryable),
+            onRetry: (error) => {
+              this.lastError = error instanceof Error ? error.message : String(error);
+            },
           },
-        },
-      );
+        );
+      } catch (error) {
+        mailError = error;
+      }
+
+      // Punkty naliczamy niezależnie od poczty: nawet trwały błąd adresu nie może
+      // odebrać klientowi punktów. Gdy Voucherify padnie, job wróci z backoffem.
+      await this.awardPoints(job);
+
+      // Błąd maila zgłaszamy po naliczeniu punktów — kolejka zdecyduje o retry/DLQ.
+      if (mailError) throw mailError;
 
       queue.ack(job.id);
       this.processed += 1;
@@ -123,6 +137,17 @@ export class TicketMailWorker {
     };
   }
 
+  /** Naliczanie punktów jest idempotentne: znacznik w bazie i ponowna próba joba. */
+  private async awardPoints(job: JobRecord): Promise<void> {
+    const reservationId =
+      typeof job.input.reservationId === "string" ? job.input.reservationId : "";
+    if (!reservationId) return;
+    const pending = this.dependencies.bookings.pendingPointsAward(reservationId);
+    if (!pending) return;
+    await this.dependencies.loyalty.awardPoints(pending.email, pending.points);
+    this.dependencies.bookings.markPointsAwarded(reservationId);
+  }
+
   private compose(job: JobRecord): TicketMail {
     const reservationId =
       typeof job.input.reservationId === "string" ? job.input.reservationId : "";
@@ -135,11 +160,15 @@ export class TicketMailWorker {
     const event = this.dependencies.catalog.getEvent(reservation.eventId);
     if (!event) throw new MissingReservationError("Kurs z rezerwacji już nie istnieje.");
 
+    const status = this.dependencies.bookings.getStatus(reservationId);
+
     return buildTicketMail(reservation, {
       relation: event.relation,
       date: formatEventDate(event.date),
       departureTime: event.departureTime,
       seatLabel: formatSeatLabel(reservation.seatId),
+      pointsUsed: status.pointsUsed,
+      pointsEarned: status.pointsEarned,
     });
   }
 
@@ -171,8 +200,19 @@ export function buildTicketMail(
     date: string;
     departureTime: string;
     seatLabel: string;
+    pointsUsed?: number;
+    pointsEarned?: number;
   },
 ): TicketMail {
+  const pointsUsed = details.pointsUsed ?? 0;
+  const pointsEarned = details.pointsEarned ?? 0;
+  const paidByCard = Math.max(0, reservation.amount - pointsUsed);
+  const summary = [
+    `Zapłacono kartą: ${formatPln(paidByCard)}`,
+    `Zapłacono punktami: ${pointsUsed} pkt (${formatPln(pointsUsed)})`,
+    `Punkty za ten zakup: ${pointsEarned} pkt`,
+  ];
+
   return {
     to: reservation.email,
     reservationId: reservation.id,
@@ -188,10 +228,20 @@ export function buildTicketMail(
       `Miejsce: ${details.seatLabel}`,
       `Kod biletu: ${reservation.code}`,
       "",
+      "Podsumowanie zakupu:",
+      ...summary,
+      "",
+      `Saldo punktów sprawdzisz na stronie biletu i w aplikacji.`,
+      "",
       "Bilet jest ważny niezależnie od tego, czy e-mail dotrze od razu — potwierdzenie wysyłamy w tle.",
       "",
       "Do zobaczenia na peronie!",
       "PAS / Kasa biletowa",
     ].join("\n"),
   };
+}
+
+/** 1 punkt = 1 grosz; kwoty w mailu pokazujemy w złotych. */
+function formatPln(grosze: number): string {
+  return `${(grosze / 100).toFixed(2).replace(".", ",")} zł`;
 }

@@ -5,6 +5,7 @@ import type {
   EventDetailResponse,
   EventListItem,
   JobView,
+  LoyaltyResponse,
   MailMessageView,
   OpsSnapshot,
   OpsStatus,
@@ -92,12 +93,23 @@ export function purchaseReservation(reservationId: string): Promise<PurchaseResp
 /**
  * Karta A: sesja Stripe Checkout. Ten sam `idempotencyKey` przy powtórce
  * (podwójne kliknięcie, zerwane połączenie) daje tę samą sesję.
+ * Karta B: `points` zmniejsza kwotę sesji; punkty schodzą w Voucherify.
  */
-export function startCheckout(reservationId: string, idempotencyKey: string): Promise<CheckoutResponse> {
+export function startCheckout(
+  reservationId: string,
+  idempotencyKey: string,
+  points = 0,
+): Promise<CheckoutResponse> {
   return request<CheckoutResponse>(`/api/reservations/${encodeURIComponent(reservationId)}/checkout`, {
     method: "POST",
     headers: { "idempotency-key": idempotencyKey },
+    body: JSON.stringify({ points }),
   });
+}
+
+/** Karta A: saldo punktów dla e-maila (nowy klient dostaje 1000 punktów). */
+export function getLoyalty(email: string): Promise<LoyaltyResponse> {
+  return request<LoyaltyResponse>(`/api/loyalty?email=${encodeURIComponent(email)}`);
 }
 
 /** Karta C: stan rezerwacji po powrocie ze Stripe'a — held, paid albo expired. */

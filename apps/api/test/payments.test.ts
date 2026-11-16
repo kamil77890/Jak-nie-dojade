@@ -70,10 +70,18 @@ describe("GET /api/reservations/:id", () => {
 
     const held = await status(reservationId);
     expect(held.statusCode).toBe(200);
-    expect(held.json()).toEqual({ status: "held", amount: PRICE, expiresAt });
+    expect(held.json()).toEqual({ status: "held", amount: PRICE, expiresAt, pointsUsed: 0, pointsEarned: 0 });
 
     const { code } = await payReservation(ctx, reservationId);
-    expect((await status(reservationId)).json()).toEqual({ status: "paid", amount: PRICE, expiresAt, code });
+    expect((await status(reservationId)).json()).toEqual({
+      status: "paid",
+      amount: PRICE,
+      expiresAt,
+      pointsUsed: 0,
+      // 8900 gr = 89 pełnych złotych zapłaconych kartą → 890 punktów.
+      pointsEarned: 890,
+      code,
+    });
   });
 
   it("po TTL bez płatności pokazuje expired bez kodu", async () => {

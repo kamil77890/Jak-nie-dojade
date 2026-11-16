@@ -85,7 +85,23 @@ export interface ReservationStatusResponse {
   status: PaymentStatus;
   amount: number;
   expiresAt: string;
+  /** Ile punktów klient wydał na ten zakup (0, dopóki nie opłacono). */
+  pointsUsed: number;
+  /** Ile punktów naliczono po opłaceniu; 0 przed płatnością. */
+  pointsEarned: number;
   code?: string;
+}
+
+/** `GET /api/loyalty?email=…` — saldo punktowe klienta (źródło: Voucherify). */
+export interface LoyaltyResponse {
+  email: string;
+  /** 1 punkt = 1 grosz; nowy klient zaczyna od 1000 punktów. */
+  points: number;
+}
+
+/** `POST /api/reservations/:id/checkout` — opcjonalna liczba punktów do wydania. */
+export interface CheckoutRequest {
+  points?: number;
 }
 
 export interface PurchaseResponse {
@@ -103,7 +119,6 @@ export interface ReservationView {
   /** Kwota w groszach z odpowiedzi rezerwacji. */
   amount: number;
 }
-
 export interface EventDetailResponse {
   event: Event;
   takenSeats: string[];
@@ -119,6 +134,9 @@ export type ApiErrorCode =
   | "RESERVATION_PAID"
   | "PAYMENT_REQUIRED"
   | "PAYMENTS_UNAVAILABLE"
+  | "INSUFFICIENT_POINTS"
+  | "POINTS_LIMIT_EXCEEDED"
+  | "LOYALTY_UNAVAILABLE"
   | "IDEMPOTENCY_KEY_REQUIRED"
   | "INVALID_SIGNATURE"
   | "RATE_LIMITED"
@@ -142,6 +160,10 @@ export interface Ticket {
   customerName: string;
   email: string;
   issuedAt: string;
+  /** Podsumowanie Etapu III — uzupełniane po odczytaniu statusu rezerwacji. */
+  amount?: number;
+  pointsUsed?: number;
+  pointsEarned?: number;
 }
 
 export type JobState = "ready" | "retry" | "done" | "dlq";

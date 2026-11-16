@@ -1,8 +1,9 @@
-import { formatDuration, formatEventDate, formatSeatLabel, getSeat, type Ticket } from "@pas/shared";
-import { type ReactNode, useRef, useState } from "react";
+import { formatDuration, formatEventDate, formatPrice, formatSeatLabel, getSeat, type Ticket } from "@pas/shared";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { EmptyPanel } from "../components/Feedback";
 import { CheckCircle, Mail, Printer, Shield } from "../components/Icons";
+import { getReservationStatus } from "../lib/api";
 import { splitRelation, timeFromIso, trainLabel, weekdayPl } from "../lib/format";
 import { EASE, gsap, scrambleText, useGsap } from "../lib/motion";
 import { loadTicket } from "../lib/session";
@@ -13,10 +14,37 @@ export function TicketPage() {
   const { reservationId = "" } = useParams();
   const location = useLocation();
   const root = useRef<HTMLDivElement>(null);
-  const [ticket] = useState<Ticket | null>(() => {
+  const [ticket, setTicket] = useState<Ticket | null>(() => {
     const state = location.state as { ticket?: Ticket } | null;
     return state?.ticket ?? loadTicket(reservationId);
   });
+
+  // Karta C: dane podsumowania (punkty) pochodzą z API — bilet w sessionStorage
+  // może być starszy niż odpowiedź statusu.
+  useEffect(() => {
+    if (!ticket || ticket.pointsEarned !== undefined) return;
+    let alive = true;
+    getReservationStatus(reservationId)
+      .then((current) => {
+        if (!alive || current.status !== "paid") return;
+        setTicket((previous) =>
+          previous
+            ? {
+                ...previous,
+                amount: current.amount,
+                pointsUsed: current.pointsUsed,
+                pointsEarned: current.pointsEarned,
+              }
+            : previous,
+        );
+      })
+      .catch(() => {
+        // Bez statusu bilet nadal jest ważny; podsumowanie punktowe po prostu się nie pokaże.
+      });
+    return () => {
+      alive = false;
+    };
+  }, [reservationId, ticket]);
 
   useDocumentTitle(ticket ? `Bilet ${ticket.code}` : "Bilet");
 
@@ -131,6 +159,37 @@ export function TicketPage() {
           </strong>
         </div>
       </article>
+
+      {ticket.pointsEarned !== undefined ? (
+        <section className="intro card mt-8 p-6 sm:p-8" aria-labelledby="points-summary">
+          <h2 id="points-summary" className="text-[24px] font-extrabold leading-tight condensed">
+            Podsumowanie zakupu
+          </h2>
+          <dl className="mt-4 grid gap-4 sm:grid-cols-3">
+            <div>
+              <dt className="text-[14px] font-semibold text-muted">Zapłacono kartą</dt>
+              <dd className="mt-1 text-[22px] font-bold narrow">
+                {formatPrice(Math.max(0, (ticket.amount ?? 0) - (ticket.pointsUsed ?? 0)))}
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[14px] font-semibold text-muted">Zapłacono punktami</dt>
+              <dd className="mt-1 text-[22px] font-bold narrow">
+                {ticket.pointsUsed ?? 0} pkt{" "}
+                <span className="text-[15px] font-semibold text-muted">({formatPrice(ticket.pointsUsed ?? 0)})</span>
+              </dd>
+            </div>
+            <div>
+              <dt className="text-[14px] font-semibold text-muted">Punkty za ten zakup</dt>
+              <dd className="mt-1 text-[22px] font-bold narrow text-accent-ink">+{ticket.pointsEarned} pkt</dd>
+            </div>
+          </dl>
+          <p className="mt-4 border-t border-line pt-4 text-[14px] text-muted">
+            Punkty naliczamy za część zapłaconą kartą: 10 punktów za każdy pełny złoty. Saldo prowadzi
+            Voucherify — zobaczysz je też w aplikacji i w kasach.
+          </p>
+        </section>
+      ) : null}
 
       <div className="intro no-print mt-8 flex flex-wrap gap-3">
         <Link className="btn btn-primary" to="/" viewTransition>

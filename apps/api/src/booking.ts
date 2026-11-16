@@ -30,6 +30,9 @@ interface ReservationRow {
   code: string | null;
   amount: number;
   paid_session_id: string | null;
+  points_used: number;
+  points_earned: number;
+  points_awarded_at: string | null;
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -199,6 +202,8 @@ export class BookingService {
         status: CLIENT_STATUS[row.status],
         amount: row.amount,
         expiresAt: row.expires_at,
+        pointsUsed: row.points_used,
+        pointsEarned: row.points_earned,
         ...(row.status === "purchased" && row.code ? { code: row.code } : {}),
       };
     });
@@ -227,7 +232,13 @@ export class BookingService {
           : { kind: "refund", reason: "already_paid" };
       }
 
-      if (payment.amount !== row.amount || payment.currency.toLowerCase() !== "pln") {
+      // Kwota, którą klient faktycznie zapłacił kartą, jest w sesji: mogła być
+      // pomniejszona o punkty. Bez sesji (stara baza) zostaje kwota rezerwacji.
+      const session = this.getSession(payment.sessionId);
+      const charged = session?.amount ?? row.amount;
+      const pointsUsed = session?.points_used ?? 0;
+
+      if (payment.amount !== charged || payment.currency.toLowerCase() !== "pln") {
         return { kind: "refund", reason: "amount_mismatch" };
       }
 
@@ -235,15 +246,19 @@ export class BookingService {
         return { kind: "refund", reason: "late_payment" };
       }
 
+      // 10 punktów za każdy pełny złoty zapłacony kartą (po odjęciu punktów).
+      const pointsEarned = Math.floor(charged / 100) * 10;
+
       const code = this.generateCode();
       try {
         this.db
           .prepare(
             `UPDATE reservations
-             SET status = 'purchased', code = ?, purchased_at = ?, paid_session_id = ?
+             SET status = 'purchased', code = ?, purchased_at = ?, paid_session_id = ?,
+                 points_used = ?, points_earned = ?
              WHERE id = ? AND status IN ('active', 'expired')`,
           )
-          .run(code, nowIso, payment.sessionId, payment.reservationId);
+          .run(code, nowIso, payment.sessionId, pointsUsed, pointsEarned, payment.reservationId);
       } catch (error) {
         // Rezerwacja wygasła leniwie, a ktoś w tym czasie zajął miejsce.
         if (String(error).includes("UNIQUE constraint failed")) {
@@ -252,6 +267,8 @@ export class BookingService {
         throw error;
       }
 
+      // Jeden job na zakup: e-mail i naliczenie punktów robi worker (E06), więc
+      // webhook nie czeka na Voucherify, a powtórka joba nie dubluje punktów.
       this.jobs.enqueue("send-ticket-email", { reservationId: payment.reservationId }, { now });
       return { kind: "paid", code };
     });
@@ -260,6 +277,29 @@ export class BookingService {
   getReservation(reservationId: string): Reservation | null {
     const row = this.getRow(reservationId);
     return row ? this.mapRow(row) : null;
+  }
+
+  /**
+   * Ile punktów trzeba jeszcze dopisać klientowi. `null` = nie ma czego robić:
+   * zakup nieopłacony, 0 punktów albo już naliczone. Dzięki znacznikowi job
+   * e-mail może być powtarzany bez podwójnego naliczania.
+   */
+  pendingPointsAward(reservationId: string): { email: string; points: number } | null {
+    const row = this.db
+      .prepare(
+        `SELECT email, points_earned FROM reservations
+         WHERE id = ? AND status = 'purchased' AND points_earned > 0 AND points_awarded_at IS NULL`,
+      )
+      .get(reservationId) as unknown as { email: string; points_earned: number } | undefined;
+    return row ? { email: row.email, points: Number(row.points_earned) } : null;
+  }
+
+  markPointsAwarded(reservationId: string): void {
+    this.db
+      .prepare(
+        "UPDATE reservations SET points_awarded_at = ? WHERE id = ? AND points_awarded_at IS NULL",
+      )
+      .run(new Date(this.clock()).toISOString(), reservationId);
   }
 
   takenSeats(eventId: string): string[] {
@@ -316,6 +356,13 @@ export class BookingService {
     const row = this.db
       .prepare("SELECT * FROM reservations WHERE id = ?")
       .get(id) as unknown as ReservationRow | undefined;
+    return row ?? null;
+  }
+
+  private getSession(sessionId: string): { amount: number; points_used: number } | null {
+    const row = this.db
+      .prepare("SELECT amount, points_used FROM checkout_sessions WHERE id = ?")
+      .get(sessionId) as unknown as { amount: number; points_used: number } | undefined;
     return row ?? null;
   }
 

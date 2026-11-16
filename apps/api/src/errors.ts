@@ -78,6 +78,34 @@ export class PaymentsUnavailableError extends HttpError {
   }
 }
 
+export class InsufficientPointsError extends HttpError {
+  constructor() {
+    super(409, "INSUFFICIENT_POINTS", "Masz za mało punktów, żeby zapłacić nimi tę kwotę.");
+  }
+}
+
+export class PointsLimitExceededError extends HttpError {
+  constructor() {
+    super(
+      409,
+      "POINTS_LIMIT_EXCEEDED",
+      "Punktami można zapłacić najwyżej połowę ceny biletu.",
+    );
+  }
+}
+
+export class LoyaltyUnavailableError extends HttpError {
+  constructor(cause?: unknown) {
+    super(
+      503,
+      "LOYALTY_UNAVAILABLE",
+      "Program lojalnościowy chwilowo nie działa. Spróbuj za chwilę.",
+      5,
+    );
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
 export class InvalidSignatureError extends HttpError {
   constructor() {
     super(400, "INVALID_SIGNATURE", "Zły podpis webhooka.");

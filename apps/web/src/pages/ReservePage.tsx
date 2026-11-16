@@ -4,7 +4,7 @@ import { Link, useNavigate, useParams } from "react-router";
 import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
 import { ArrowLeft } from "../components/Icons";
 import { TripSummary } from "../components/TripSummary";
-import { createReservation, getEvent } from "../lib/api";
+import { createReservation, getEvent, getLoyalty } from "../lib/api";
 import { describeApiError } from "../lib/errors";
 import { toSummary, trainLabel } from "../lib/format";
 import { EASE, gsap, useGsap } from "../lib/motion";
@@ -32,6 +32,7 @@ export function ReservePage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [balance, setBalance] = useState<{ email: string; points: number } | null>(null);
   const ttl = formatTtl(useReservationTtl());
 
   useDocumentTitle("Rezerwacja miejsca");
@@ -70,6 +71,29 @@ export function ReservePage() {
     },
     [Boolean(event), seatTaken],
   );
+
+  // Karta A: po wpisaniu e-maila pokazujemy saldo (nowy klient: 1000 punktów).
+  useEffect(() => {
+    const email = passenger.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+      setBalance(null);
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(() => {
+      getLoyalty(email)
+        .then((result) => {
+          if (alive) setBalance({ email, points: result.points });
+        })
+        .catch(() => {
+          if (alive) setBalance(null);
+        });
+    }, 450);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [passenger.email]);
 
   const seat = event?.wagons.flatMap((wagon) => wagon.seats).find((item) => item.id === seatId);
 
@@ -268,6 +292,15 @@ export function ReservePage() {
                   placeholder="anna@example.com"
                 />
               </Field>
+
+              {balance && balance.email === passenger.email.trim().toLowerCase() ? (
+                <p className="rounded-xl border border-line bg-raised/60 px-4 py-3 text-[15px]" aria-live="polite">
+                  <strong className="font-semibold">Masz {balance.points.toLocaleString("pl-PL")} punktów</strong>{" "}
+                  <span className="text-muted">
+                    ({formatPrice(balance.points)}). Punktami możesz zapłacić do połowy ceny biletu.
+                  </span>
+                </p>
+              ) : null}
 
               {serverError ? <InlineAlert>{serverError}</InlineAlert> : null}
 

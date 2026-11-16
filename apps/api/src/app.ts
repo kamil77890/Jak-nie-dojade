@@ -15,7 +15,13 @@ import { type Db, openDatabase } from "./db";
 import { BusyError, HttpError, RateLimitedError, UnauthorizedError } from "./errors";
 import { GuardState, addLease, releaseLeases } from "./guards";
 import { JobQueue } from "./jobs";
-import { HttpMailer, MailAdmin, type Mailer } from "./mail";
+import {
+  LoyaltyService,
+  MemoryLoyaltyProvider,
+  VoucherifyLoyaltyProvider,
+  type LoyaltyProvider,
+} from "./loyalty";
+import { HttpMailer, MailAdmin, ResendMailer, type Mailer } from "./mail";
 import { isTestSecretKey, type PaymentGateway, StripeGateway } from "./payments";
 import { Bulkhead, CircuitBreaker, TokenBucket } from "./resilience";
 import { registerEventRoutes, type Guard } from "./routes/events";
@@ -34,6 +40,8 @@ export interface BuildAppOptions {
   mailAdmin?: MailAdmin;
   /** Atrapa Stripe'a w testach. Bez niej bramka powstaje z kluczy w konfiguracji. */
   paymentGateway?: PaymentGateway | null;
+  /** Atrapa Voucherify w testach (np. wymuszony błąd 503). */
+  loyaltyProvider?: LoyaltyProvider;
   startWorker?: boolean;
   logger?: boolean;
 }
@@ -45,6 +53,7 @@ export interface AppServices {
   catalog: EventCatalog;
   jobs: JobQueue;
   bookings: BookingService;
+  loyalty: LoyaltyService;
   breaker: CircuitBreaker;
   paymentBreaker: CircuitBreaker;
   checkout: CheckoutService;
@@ -73,9 +82,23 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     resetTimeoutMs: config.mail.breakerResetMs,
     clock,
   });
-  const mailer = options.mailer ?? new HttpMailer(config.mail.providerUrl, config.mail.timeoutMs);
+  const mailer = options.mailer ?? createMailer(config);
   const mailAdmin =
     options.mailAdmin ?? new MailAdmin(config.mail.controlUrl, Math.min(config.mail.timeoutMs, 500));
+
+  // Voucherify to trzecia zależność zewnętrzna (Etap III): własny bezpiecznik.
+  // Bez kompletu kluczy Sandboxa działa fallback pamięciowy (dev/test).
+  const loyaltyBreaker = new CircuitBreaker({
+    failureThreshold: config.loyalty.breakerFailureThreshold,
+    resetTimeoutMs: config.loyalty.breakerResetMs,
+    clock,
+  });
+  const loyalty = new LoyaltyService(
+    db,
+    options.loyaltyProvider ?? createLoyaltyProvider(config, loyaltyBreaker),
+    config.loyalty.welcomePoints,
+    clock,
+  );
 
   // Stripe to druga zależność zewnętrzna (E04): własny bezpiecznik, niezależny od poczty.
   const paymentBreaker = new CircuitBreaker({
@@ -91,6 +114,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     catalog,
     gateway: paymentGateway,
     breaker: paymentBreaker,
+    loyalty,
     publicUrl: config.payments.publicUrl,
     clock,
   });
@@ -113,6 +137,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     catalog,
     mailer,
     breaker,
+    loyalty,
     config,
     clock,
   });
@@ -265,7 +290,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   ];
 
   registerEventRoutes(app, { catalog, bookings, readGuards });
-  registerReservationRoutes(app, { bookings, checkout, readGuards, reservationGuards, purchaseGuards });
+  registerReservationRoutes(app, {
+    bookings,
+    checkout,
+    loyalty,
+    readGuards,
+    reservationGuards,
+    purchaseGuards,
+  });
   await registerWebhookRoutes(app, { checkout });
 
   if (config.opsEnabled) {
@@ -345,6 +377,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       catalog,
       jobs,
       bookings,
+      loyalty,
       breaker,
       paymentBreaker,
       checkout,
@@ -354,6 +387,37 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       startedAt: clock(),
     },
   };
+}
+
+/** Resend, gdy jest klucz; inaczej lokalny mock HTTP (Etap I). */
+function createMailer(config: AppConfig): Mailer {
+  if (config.resend.apiKey) {
+    return new ResendMailer({
+      apiKey: config.resend.apiKey,
+      from: config.resend.from,
+      apiUrl: config.resend.apiUrl,
+      timeoutMs: config.resend.timeoutMs,
+    });
+  }
+  return new HttpMailer(config.mail.providerUrl, config.mail.timeoutMs);
+}
+
+function createLoyaltyProvider(
+  config: AppConfig,
+  breaker: CircuitBreaker,
+): VoucherifyLoyaltyProvider | MemoryLoyaltyProvider {
+  if (config.loyalty.provider === "voucherify") {
+    return new VoucherifyLoyaltyProvider({
+      appId: config.loyalty.appId ?? "",
+      appToken: config.loyalty.appToken ?? "",
+      campaignId: config.loyalty.campaignId ?? "",
+      apiUrl: config.loyalty.apiUrl,
+      timeoutMs: config.loyalty.timeoutMs,
+      maxRetries: config.loyalty.maxRetries,
+      breaker,
+    });
+  }
+  return new MemoryLoyaltyProvider();
 }
 
 /** Prawdziwy Stripe tylko z kluczem testowym i sekretem webhooka; inaczej płatności są wyłączone. */

@@ -10,6 +10,13 @@ const PAYMENTS_ENV = {
   STRIPE_SECRET_KEY: "sk_test_pas",
   STRIPE_WEBHOOK_SECRET: "whsec_pas",
   PUBLIC_URL: "https://kasa.example.com",
+  // Komplet zależności Etapu III — inaczej konfiguracja słusznie ostrzega
+  // o pamięciowym fallbacku punktów i mocku poczty.
+  LOYALTY_PROVIDER: "voucherify",
+  VOUCHERIFY_APP_ID: "app_test",
+  VOUCHERIFY_APP_TOKEN: "token_test",
+  VOUCHERIFY_CAMPAIGN_ID: "camp_test",
+  RESEND_API_KEY: "re_test",
 };
 
 let ctx: TestContext | undefined;

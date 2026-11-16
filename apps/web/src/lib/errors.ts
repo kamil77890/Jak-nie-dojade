@@ -30,6 +30,12 @@ export function describeApiError(error: unknown): string {
       return "Bilet wydamy po płatności. Kliknij „Zapłać”.";
     case "PAYMENTS_UNAVAILABLE":
       return "Płatności chwilowo nie działają. Rezerwacja trwa — spróbuj za chwilę.";
+    case "INSUFFICIENT_POINTS":
+      return "Masz za mało punktów. Zmniejsz liczbę punktów albo zapłać całość kartą.";
+    case "POINTS_LIMIT_EXCEEDED":
+      return "Punktami można zapłacić najwyżej połowę ceny biletu.";
+    case "LOYALTY_UNAVAILABLE":
+      return "Program lojalnościowy chwilowo nie odpowiada. Zapłać kartą albo spróbuj za chwilę.";
     case "IDEMPOTENCY_KEY_REQUIRED":
       return "Nie udało się przygotować płatności. Odśwież stronę i spróbuj jeszcze raz.";
     case "VALIDATION_ERROR":

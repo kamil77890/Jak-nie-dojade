@@ -84,6 +84,67 @@ export class HttpMailer implements Mailer {
   }
 }
 
+/**
+ * Resend (Etap III). To ta sama rola co mock: worker wysyła gotową wiadomość
+ * i dostaje identyfikator. Klucz zostaje na serwerze; przeglądarka go nie widzi.
+ */
+export class ResendMailer implements Mailer {
+  constructor(
+    private readonly options: {
+      apiKey: string;
+      from: string;
+      apiUrl: string;
+      timeoutMs: number;
+    },
+  ) {}
+
+  async send(message: TicketMail, idempotencyKey: string): Promise<SendResult> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.options.apiUrl}/emails`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${this.options.apiKey}`,
+          "content-type": "application/json",
+          // Resend deduplikuje po tym nagłówku — powtórka joba nie wyśle drugiego maila.
+          "idempotency-key": idempotencyKey,
+        },
+        body: JSON.stringify({
+          from: this.options.from,
+          to: [message.to],
+          subject: message.subject,
+          text: message.text,
+        }),
+        signal: AbortSignal.timeout(this.options.timeoutMs),
+      });
+    } catch (error) {
+      const isTimeout =
+        error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
+      throw new MailDeliveryError(
+        isTimeout ? `Resend: timeout po ${this.options.timeoutMs} ms` : `Resend: ${String(error)}`,
+        true,
+      );
+    }
+
+    if (!response.ok) {
+      const retryable = response.status === 429 || response.status >= 500;
+      const body = await response.text().catch(() => "");
+      throw new MailDeliveryError(
+        `Resend ${response.status}: ${body.slice(0, 200)}`,
+        retryable,
+        response.status,
+      );
+    }
+
+    try {
+      const body = (await response.json()) as { id?: string };
+      return { id: body.id ?? "unknown", duplicate: false };
+    } catch {
+      return { id: "unknown", duplicate: false };
+    }
+  }
+}
+
 /** Klient panelu /lab — tylko odczyt i sterowanie mockiem. */
 export class MailAdmin {
   constructor(

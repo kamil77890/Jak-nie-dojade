@@ -1,7 +1,7 @@
 import { formatPrice, type ReservationView } from "@pas/shared";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { ApiRequestError, startCheckout } from "../lib/api";
+import { ApiRequestError, getLoyalty, startCheckout } from "../lib/api";
 import { describeApiError, RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
 import { checkoutKey } from "../lib/session";
 import { ArrowRight, Mail, Shield } from "./Icons";
@@ -30,8 +30,36 @@ export function PurchasePanel({
   const [loading, setLoading] = useState(false);
   const [forcedExpired, setForcedExpired] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Karta A/B: saldo pochodzi z Voucherify (przez API). Do połowy ceny można płacić punktami.
+  const [balance, setBalance] = useState<number | null>(null);
+  const [pointsRaw, setPointsRaw] = useState("0");
+
+  useEffect(() => {
+    let alive = true;
+    getLoyalty(reservation.email)
+      .then((result) => {
+        if (alive) setBalance(result.points);
+      })
+      .catch(() => {
+        // Brak programu lojalnościowego nie blokuje płatności kartą.
+        if (alive) setBalance(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [reservation.email]);
+
   const isExpired = expired || forcedExpired;
-  const price = formatPrice(reservation.amount);
+  const maxPoints = Math.min(balance ?? 0, Math.floor(reservation.amount / 2));
+  const parsedPoints = Number.parseInt(pointsRaw, 10);
+  const points = Number.isFinite(parsedPoints) ? Math.max(0, Math.min(parsedPoints, maxPoints)) : 0;
+  const payable = Math.max(0, reservation.amount - points);
+  const price = formatPrice(payable);
+
+  function updatePoints(raw: string) {
+    setPointsRaw(raw);
+  }
 
   async function handlePay() {
     if (loading || isExpired) return;
@@ -39,7 +67,11 @@ export function PurchasePanel({
     setError(null);
 
     try {
-      const { url } = await startCheckout(reservation.reservationId, checkoutKey(reservation.reservationId));
+      const { url } = await startCheckout(
+        reservation.reservationId,
+        checkoutKey(reservation.reservationId),
+        points,
+      );
       redirectTo.assign(url);
       // Przycisk zostaje w stanie „Przechodzimy…”, dopóki przeglądarka nie zmieni strony.
     } catch (caught) {
@@ -88,6 +120,50 @@ export function PurchasePanel({
           ? "Nic nie pobraliśmy. Miejsce wciąż jest Twoje — możesz zapłacić jeszcze raz, dopóki licznik biegnie."
           : "Klikniesz „Zapłać”, przejdziesz na stronę płatności Stripe'a, a po zapłacie wrócisz po bilet z kodem."}
       </p>
+
+      {balance !== null && maxPoints > 0 ? (
+        <div className="mb-5 rounded-2xl border border-line bg-raised/60 p-4">
+          <label htmlFor="points" className="flex items-baseline justify-between gap-3 text-[15px] font-semibold">
+            <span>Użyj punktów</span>
+            <span className="text-[14px] font-normal text-muted">
+              masz {balance.toLocaleString("pl-PL")} pkt
+            </span>
+          </label>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              id="points"
+              name="points"
+              type="number"
+              inputMode="numeric"
+              min={0}
+              max={maxPoints}
+              step={1}
+              className="field-input w-[140px]"
+              value={pointsRaw}
+              onChange={(changeEvent) => updatePoints(changeEvent.target.value)}
+              onBlur={() => setPointsRaw(String(points))}
+              aria-describedby="points-hint"
+            />
+            <span className="text-[15px] text-muted">pkt</span>
+            <button
+              type="button"
+              className="ml-auto text-[14px] font-semibold text-ink underline underline-offset-4"
+              onClick={() => setPointsRaw(String(maxPoints))}
+            >
+              Użyj maksimum
+            </button>
+          </div>
+          <p id="points-hint" className="mt-2 text-[14px] text-muted">
+            Możesz zapłacić punktami do {formatPrice(maxPoints)} (najwyżej połowa ceny biletu).
+            100 punktów = 1 zł.
+          </p>
+          {points > 0 ? (
+            <p className="mt-2 text-[14px] font-semibold text-ink">
+              {formatPrice(reservation.amount)} − {formatPrice(points)} punktami = {formatPrice(payable)} kartą
+            </p>
+          ) : null}
+        </div>
+      ) : null}
 
       <button
         type="button"

@@ -3,7 +3,14 @@ import { formatEventDate, formatSeatLabel } from "@pas/shared";
 import type { BookingService, PaymentOutcome } from "./booking";
 import type { EventCatalog } from "./catalog";
 import { type Db, transaction } from "./db";
-import { InvalidSignatureError, PaymentsUnavailableError } from "./errors";
+import {
+  InsufficientPointsError,
+  InvalidSignatureError,
+  PaymentsUnavailableError,
+  PointsLimitExceededError,
+  ValidationError,
+} from "./errors";
+import type { LoyaltyService } from "./loyalty";
 import {
   InvalidWebhookSignatureError,
   type PaymentGateway,
@@ -34,6 +41,8 @@ export interface CheckoutServiceOptions {
   /** null = Stripe nie jest skonfigurowany; checkout i webhook odpowiadają 503. */
   gateway: PaymentGateway | null;
   breaker: CircuitBreaker;
+  /** Voucherify (albo fallback pamięciowy) — źródło prawdy o saldzie punktów. */
+  loyalty: LoyaltyService;
   /** Adres frontendu, na który Stripe odsyła klienta, np. https://kasa.example.com. */
   publicUrl: string;
   clock: () => number;
@@ -61,12 +70,24 @@ export class CheckoutService {
     return this.options.gateway !== null;
   }
 
-  async startCheckout(reservationId: string, idempotencyKey: string): Promise<CheckoutResponse> {
+  async startCheckout(
+    reservationId: string,
+    idempotencyKey: string,
+    points: number = 0,
+  ): Promise<CheckoutResponse> {
     const { gateway, bookings } = this.options;
     if (!gateway) throw new PaymentsUnavailableError();
 
+    if (!Number.isInteger(points) || points < 0) {
+      throw new ValidationError("Liczba punktów musi być nieujemną liczbą całkowitą.");
+    }
+
     // 404 / 409 RESERVATION_EXPIRED / 409 RESERVATION_PAID — zanim zawołamy Stripe'a.
     const reservation = bookings.assertPayable(reservationId);
+
+    // Najwyżej połowa ceny biletu; resztę klient dopłaca kartą.
+    const maxPoints = Math.floor(reservation.amount / 2);
+    if (points > maxPoints) throw new PointsLimitExceededError();
 
     // Powtórka z tym samym kluczem: ta sama sesja, bez drugiego wywołania Stripe'a.
     const sameKey = this.findByKey(reservationId, idempotencyKey);
@@ -80,7 +101,13 @@ export class CheckoutService {
     const inFlight = this.pending.get(reservationId);
     if (inFlight) return inFlight;
 
-    const created = this.createSession(reservation, idempotencyKey).finally(() => {
+    if (points > 0) {
+      // Saldo sprawdzamy przed pobraniem; samo pobranie i tak jest atomowe w Voucherify.
+      const balance = await this.options.loyalty.getBalance(reservation.email);
+      if (balance < points) throw new InsufficientPointsError();
+    }
+
+    const created = this.createSession(reservation, idempotencyKey, points).finally(() => {
       this.pending.delete(reservationId);
     });
     this.pending.set(reservationId, created);
@@ -111,10 +138,8 @@ export class CheckoutService {
       case "checkout.session.async_payment_succeeded":
         return { ...base, duplicate: false, ...(await this.handlePaid(event)) };
       case "checkout.session.expired":
-        transaction(this.options.db, () => {
-          if (event.session) this.setSessionStatus(event.session.id, "expired", null, ["open"]);
-          this.markProcessed(event);
-        });
+        if (event.session) await this.expireSession(event.session.id, event);
+        else transaction(this.options.db, () => this.markProcessed(event));
         return { ...base, duplicate: false };
       default:
         // Inne zdarzenia nas nie dotyczą, ale potwierdzamy je, żeby Stripe ich nie ponawiał.
@@ -166,10 +191,13 @@ export class CheckoutService {
   private async createSession(
     reservation: ReturnType<BookingService["assertPayable"]>,
     idempotencyKey: string,
+    points: number,
   ): Promise<CheckoutResponse> {
-    const { gateway, breaker, catalog, publicUrl, clock } = this.options;
+    const { gateway, breaker, catalog, publicUrl, clock, loyalty } = this.options;
     const event = catalog.getEvent(reservation.eventId);
     if (!gateway || !event) throw new PaymentsUnavailableError();
+
+    const charged = reservation.amount - points;
 
     const base = publicUrl.replace(/\/+$/, "");
     const reservationPath = `${base}/reservations/${encodeURIComponent(reservation.id)}`;
@@ -177,13 +205,16 @@ export class CheckoutService {
     // te same parametry, więc ponowienie u Stripe'a nie skończy się błędem idempotencji.
     const expiresAt = Date.parse(reservation.expiresAt) + MIN_STRIPE_SESSION_MS;
 
+    // Punkty schodzą przed utworzeniem sesji; jeśli Stripe odmówi, wracają na kartę.
+    if (points > 0) await loyalty.spendPoints(reservation.email, points);
+
     let session;
     try {
       session = await breaker.fire(() =>
         gateway.createCheckoutSession(
           {
             reservationId: reservation.id,
-            amount: reservation.amount,
+            amount: charged,
             currency: "pln",
             productName: `Bilet: ${event.relation}`,
             description: `${formatEventDate(event.date)}, odjazd ${event.departureTime}. ${formatSeatLabel(reservation.seatId)}.`,
@@ -197,27 +228,35 @@ export class CheckoutService {
       );
     } catch (error) {
       // Stripe nie odpowiada, odmówił albo bezpiecznik jest otwarty: rezerwacja zostaje,
-      // klient może spróbować ponownie z tym samym kluczem.
+      // a punkty wracają, żeby klient mógł spróbować ponownie z tym samym kluczem.
+      if (points > 0) await loyalty.awardPoints(reservation.email, points).catch(() => undefined);
       throw new PaymentsUnavailableError(5, error);
     }
 
     const createdAt = new Date(clock()).toISOString();
-    this.options.db
-      .prepare(
-        `INSERT INTO checkout_sessions
-           (id, reservation_id, idempotency_key, url, amount, status, created_at, expires_at, payment_intent)
-         VALUES (?, ?, ?, ?, ?, 'open', ?, ?, NULL)
-         ON CONFLICT (id) DO NOTHING`,
-      )
-      .run(
-        session.id,
-        reservation.id,
-        idempotencyKey,
-        session.url,
-        reservation.amount,
-        createdAt,
-        new Date(session.expiresAt).toISOString(),
-      );
+    try {
+      this.options.db
+        .prepare(
+          `INSERT INTO checkout_sessions
+             (id, reservation_id, idempotency_key, url, amount, status, created_at, expires_at, payment_intent, points_used)
+           VALUES (?, ?, ?, ?, ?, 'open', ?, ?, NULL, ?)
+           ON CONFLICT (id) DO NOTHING`,
+        )
+        .run(
+          session.id,
+          reservation.id,
+          idempotencyKey,
+          session.url,
+          charged,
+          createdAt,
+          new Date(session.expiresAt).toISOString(),
+          points,
+        );
+    } catch (error) {
+      // Sesja u Stripe'a istnieje, więc punktów nie oddajemy (klient może nią zapłacić),
+      // ale bez rekordu nie potwierdzimy płatności — lepiej głośno zgłosić błąd.
+      throw error;
+    }
 
     return { url: session.url };
   }
@@ -243,6 +282,45 @@ export class CheckoutService {
       )
       .get(reservationId, nowIso) as unknown as CheckoutSessionRow | undefined;
     return row ?? null;
+  }
+
+  /**
+   * Sesja wygasła bez płatności: punkty użyte do jej utworzenia wracają na kartę.
+   * Zwrot robimy tylko przy przejściu open → expired (powtórka zdarzenia nic nie zmienia).
+   */
+  private async expireSession(sessionId: string, event: PaymentWebhookEvent): Promise<void> {
+    const row = this.options.db
+      .prepare(
+        `SELECT s.points_used AS points_used, r.email AS email
+         FROM checkout_sessions s
+         JOIN reservations r ON r.id = s.reservation_id
+         WHERE s.id = ?`,
+      )
+      .get(sessionId) as unknown as { points_used: number; email: string } | undefined;
+
+    const refunded = transaction(this.options.db, () => {
+      const result = this.options.db
+        .prepare("UPDATE checkout_sessions SET status = 'expired' WHERE id = ? AND status = 'open'")
+        .run(sessionId);
+      this.markProcessed(event);
+      return Number(result.changes) > 0 ? (row?.points_used ?? 0) : 0;
+    });
+
+    if (row && refunded > 0) {
+      try {
+        await this.options.loyalty.awardPoints(row.email, refunded);
+      } catch (error) {
+        // Nie zapisujemy zdarzenia jako przetworzonego i wracamy do `open`, żeby
+        // ponowienie od Stripe'a spróbowało zwrotu punktów jeszcze raz.
+        transaction(this.options.db, () => {
+          this.options.db
+            .prepare("UPDATE checkout_sessions SET status = 'open' WHERE id = ? AND status = 'expired'")
+            .run(sessionId);
+          this.options.db.prepare("DELETE FROM stripe_events WHERE id = ?").run(event.id);
+        });
+        throw error;
+      }
+    }
   }
 
   private setSessionStatus(

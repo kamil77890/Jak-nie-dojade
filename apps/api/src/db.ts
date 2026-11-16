@@ -23,7 +23,10 @@ const SCHEMA = `
     code          TEXT UNIQUE,
     purchased_at  TEXT,
     amount        INTEGER NOT NULL DEFAULT 0,
-    paid_session_id TEXT
+    paid_session_id TEXT,
+    points_used   INTEGER NOT NULL DEFAULT 0,
+    points_earned INTEGER NOT NULL DEFAULT 0,
+    points_awarded_at TEXT
   );
 
   -- Jedno żywe (aktywne albo kupione) miejsce na kurs. Baza pilnuje tego sama.
@@ -59,11 +62,22 @@ const SCHEMA = `
     created_at      TEXT NOT NULL,
     expires_at      TEXT NOT NULL,
     payment_intent  TEXT,
+    points_used     INTEGER NOT NULL DEFAULT 0,
     UNIQUE (reservation_id, idempotency_key)
   );
 
   CREATE INDEX IF NOT EXISTS checkout_sessions_reservation_idx
     ON checkout_sessions(reservation_id, status);
+
+  -- Etap III: mapowanie e-mail → karta lojalnościowa w Voucherify. Saldo nadal
+  -- mieszka w Voucherify; ta tabela pamięta tylko, na którą kartę patrzeć
+  -- i czy bonus powitalny został już przyznany.
+  CREATE TABLE IF NOT EXISTS loyalty_accounts (
+    email       TEXT PRIMARY KEY,
+    member_id   TEXT NOT NULL,
+    welcomed_at TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+  );
 
   -- Zdarzenia webhooka już przetworzone. Stripe dostarcza „co najmniej raz”.
   CREATE TABLE IF NOT EXISTS stripe_events (
@@ -77,6 +91,12 @@ const SCHEMA = `
 const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
   { table: "reservations", column: "amount", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "reservations", column: "paid_session_id", ddl: "TEXT" },
+  // Etap III: punkty użyte i zebrane. Wartości liczy API, Voucherify trzyma saldo.
+  { table: "reservations", column: "points_used", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { table: "reservations", column: "points_earned", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  // Znacznik „punkty już poszły do Voucherify” — job e-mail jest at-least-once.
+  { table: "reservations", column: "points_awarded_at", ddl: "TEXT" },
+  { table: "checkout_sessions", column: "points_used", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 function migrate(db: DatabaseSyncType): void {

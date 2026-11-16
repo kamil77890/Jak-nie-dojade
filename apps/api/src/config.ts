@@ -49,6 +49,29 @@ export interface AppConfig {
     breakerFailureThreshold: number;
     breakerResetMs: number;
   };
+  /**
+   * Program lojalnościowy (Etap III). Voucherify jest źródłem prawdy o saldzie.
+   * `memory` to lokalny fallback dla dev/testów, gdy nie ma kluczy Sandboxa.
+   */
+  loyalty: {
+    provider: "voucherify" | "memory";
+    appId: string | null;
+    appToken: string | null;
+    campaignId: string | null;
+    apiUrl: string;
+    welcomePoints: number;
+    timeoutMs: number;
+    maxRetries: number;
+    breakerFailureThreshold: number;
+    breakerResetMs: number;
+  };
+  /** Wysyłka maili przez Resend (Etap III). Bez klucza zostaje mock HTTP z Etapu I. */
+  resend: {
+    apiKey: string | null;
+    from: string;
+    apiUrl: string;
+    timeoutMs: number;
+  };
   worker: {
     enabled: boolean;
     intervalMs: number;
@@ -155,6 +178,35 @@ export function loadConfig(env: Env = process.env): AppConfig {
       breakerFailureThreshold: readInt(env, "STRIPE_BREAKER_FAILURE_THRESHOLD", 5, 1),
       breakerResetMs: readInt(env, "STRIPE_BREAKER_RESET_MS", 30_000, 100),
     },
+    loyalty: (() => {
+      const appId = env.VOUCHERIFY_APP_ID?.trim() || null;
+      const appToken = env.VOUCHERIFY_APP_TOKEN?.trim() || null;
+      const campaignId = env.VOUCHERIFY_CAMPAIGN_ID?.trim() || null;
+      const requested = env.LOYALTY_PROVIDER?.trim().toLowerCase();
+      // Jawne `memory` pozwala odpalić demo bez konta; `auto` wybiera Voucherify tylko z kompletem kluczy.
+      let provider: "voucherify" | "memory";
+      if (requested === "memory") provider = "memory";
+      else if (requested === "voucherify") provider = "voucherify";
+      else provider = appId && appToken && campaignId ? "voucherify" : "memory";
+      return {
+        provider,
+        appId,
+        appToken,
+        campaignId,
+        apiUrl: (env.VOUCHERIFY_API_URL?.trim() || "https://api.voucherify.io").replace(/\/+$/, ""),
+        welcomePoints: readInt(env, "LOYALTY_WELCOME_POINTS", 1_000, 0),
+        timeoutMs: readInt(env, "VOUCHERIFY_TIMEOUT_MS", 5_000, 100),
+        maxRetries: readInt(env, "VOUCHERIFY_MAX_RETRIES", 2, 0),
+        breakerFailureThreshold: readInt(env, "VOUCHERIFY_BREAKER_FAILURE_THRESHOLD", 5, 1),
+        breakerResetMs: readInt(env, "VOUCHERIFY_BREAKER_RESET_MS", 30_000, 100),
+      };
+    })(),
+    resend: {
+      apiKey: env.RESEND_API_KEY?.trim() || null,
+      from: env.RESEND_FROM?.trim() || "PAS Kasa <onboarding@resend.dev>",
+      apiUrl: (env.RESEND_API_URL?.trim() || "https://api.resend.com").replace(/\/+$/, ""),
+      timeoutMs: readInt(env, "RESEND_TIMEOUT_MS", 5_000, 100),
+    },
     worker: {
       enabled: readBool(env, "WORKER_ENABLED", true),
       intervalMs: readInt(env, "WORKER_INTERVAL_MS", 250, 25),
@@ -208,6 +260,8 @@ export function mergeConfig(base: AppConfig, override?: DeepPartial<AppConfig>):
     ...override,
     mail: { ...base.mail, ...override.mail },
     payments: { ...base.payments, ...override.payments },
+    loyalty: { ...base.loyalty, ...override.loyalty },
+    resend: { ...base.resend, ...override.resend },
     worker: { ...base.worker, ...override.worker },
     overload: { ...base.overload, ...override.overload },
     rateLimit: {
@@ -269,6 +323,22 @@ export function configWarnings(config: AppConfig): string[] {
     warnings.push(
       `PUBLIC_URL wskazuje ${config.payments.publicUrl} — Stripe odeśle tam klienta po płatności. ` +
         "Ustaw publiczny adres sklepu.",
+    );
+  }
+  if (config.loyalty.provider === "memory") {
+    warnings.push(
+      "Punkty działają w pamięci procesu (LOYALTY_PROVIDER=memory) — saldo znika po restarcie. " +
+        "Do Etapu III ustaw VOUCHERIFY_APP_ID, VOUCHERIFY_APP_TOKEN i VOUCHERIFY_CAMPAIGN_ID.",
+    );
+  } else if (!config.loyalty.campaignId || !config.loyalty.appId || !config.loyalty.appToken) {
+    warnings.push(
+      "Voucherify jest wybrany, ale brakuje kompletu kluczy — żądania do Voucherify skończą się 503.",
+    );
+  }
+  if (!config.resend.apiKey) {
+    warnings.push(
+      "RESEND_API_KEY nie jest ustawiony — maile idą do lokalnego mocka (MAIL_PROVIDER_URL), " +
+        "a nie przez Resend.",
     );
   }
   if (config.opsEnabled && config.production && !config.opsToken) {

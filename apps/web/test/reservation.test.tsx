@@ -246,6 +246,34 @@ describe("karta A — przycisk „Zapłać” na ekranie rezerwacji", () => {
     expect(window.sessionStorage.getItem("pas.checkout-key.res-1")).toBe(JSON.stringify(headers["idempotency-key"]));
   });
 
+  it("pokazuje saldo, zmniejsza kwotę punktami i wysyła je w body checkoutu", async () => {
+    freezeDate(NOW);
+    const assign = vi.spyOn(redirectTo, "assign").mockImplementation(() => undefined);
+    const fetchMock = stubApi((method, path) => {
+      if (path === "/api/loyalty") return json(200, { email: "anna@example.com", points: 1000 });
+      if (method === "POST" && path === "/api/reservations/res-1/checkout") {
+        return json(200, { url: "https://checkout.stripe.com/c/pay/cs_test_points" });
+      }
+      return json(404, {});
+    });
+    saveReservation(view());
+    renderAt("/reservations/res-1");
+
+    const input = await screen.findByRole("spinbutton", { name: /użyj punktów/i });
+    expect(screen.getByText(/1\s*000 pkt/)).toBeTruthy();
+
+    fireEvent.change(input, { target: { value: "1000" } });
+    expect(payButton()?.textContent).toContain("Zapłać 79 zł");
+
+    fireEvent.click(payButton()!);
+    await waitFor(() =>
+      expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/cs_test_points"),
+    );
+
+    const checkoutCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/checkout"));
+    expect(JSON.parse(String(checkoutCall?.[1]?.body))).toEqual({ points: 1000 });
+  });
+
   it("409 RESERVATION_EXPIRED: cały ekran przechodzi w wygaśnięcie, choć licznik jeszcze trwał", async () => {
     freezeDate(NOW);
     stubApi((method, path) =>
