@@ -186,7 +186,7 @@ describe("zadanie 1 — zwrot płatności oddaje punkty tej sesji dokładnie raz
     expect(await balance()).toBe(700);
 
     // Druga sesja z punktami (np. z innej instancji API) — zapisana i opłacona po fakcie.
-    await ctx.services.loyalty.spendPoints(EMAIL, 200);
+    await ctx.services.loyalty.withSpendLock(EMAIL, (lock) => ctx.services.loyalty.spendPoints(lock, 200));
     ctx.services.db
       .prepare(
         `INSERT INTO checkout_sessions

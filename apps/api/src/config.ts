@@ -77,6 +77,20 @@ export interface AppConfig {
     balanceCacheTtlMs: number;
     /** Do jakiego wieku stare saldo może zastąpić 503 przy samym wyświetlaniu. */
     balanceStaleTtlMs: number;
+    /**
+     * Jak długo pamiętamy „ten e-mail nie ma karty w Voucherify” po wyszukaniu w odczycie
+     * salda. Krótko (≤ 15 s), żeby karta założona w panelu była widoczna w 15 s.
+     */
+    noCardCacheTtlMs: number;
+  };
+  /**
+   * Zwrot punktów porzuconych sesji (III.B4): co `intervalMs` sesje z punktami, których
+   * rezerwacja wygasła, są wygaszane w Stripe, a punkty wracają na kartę.
+   */
+  pointsSweep: {
+    enabled: boolean;
+    intervalMs: number;
+    batchSize: number;
   };
   /** Wysyłka maili przez Resend (Etap III). Bez klucza zostaje mock HTTP z Etapu I. */
   resend: {
@@ -92,6 +106,14 @@ export interface AppConfig {
     leaseMs: number;
     baseBackoffMs: number;
     maxBackoffMs: number;
+    /**
+     * Voucherify niedostępny (awaria, limit): job z punktami czeka na zależność z rosnącym
+     * odstępem (od `loyaltyRetryBaseMs` do `loyaltyRetryMaxMs`), a próby nie liczą się
+     * do `maxAttempts`. Po `loyaltyRetryHorizonMs` od utworzenia joba — zwykłe próby i DLQ.
+     */
+    loyaltyRetryBaseMs: number;
+    loyaltyRetryMaxMs: number;
+    loyaltyRetryHorizonMs: number;
   };
   overload: {
     maxInFlight: number;
@@ -106,6 +128,12 @@ export interface AppConfig {
     purchase: BucketConfig;
     /** `GET /api/loyalty` per IP — każdy odczyt może kosztować wywołanie Voucherify. */
     loyalty: BucketConfig;
+    /**
+     * Checkout z punktami, który doszedł do Voucherify (1–4 wywołania z limitu 100/h):
+     * osobno per IP i per e-mail rezerwacji.
+     */
+    pointsCheckoutIp: BucketConfig;
+    pointsCheckoutEmail: BucketConfig;
   };
   bulkhead: {
     waitTimeoutMs: number;
@@ -215,12 +243,23 @@ export function loadConfig(env: Env = process.env): AppConfig {
         breakerFailureThreshold: readInt(env, "VOUCHERIFY_BREAKER_FAILURE_THRESHOLD", 5, 1),
         breakerResetMs: readInt(env, "VOUCHERIFY_BREAKER_RESET_MS", 30_000, 100),
         hourlyBudget: readInt(env, "VOUCHERIFY_HOURLY_BUDGET", 90, 1),
+        // Podział 90: odczyty do 45, checkout do 70 (co najmniej 25 tylko dla niego),
+        // zwroty i naliczenia do 90 (co najmniej 20 tylko dla nich). Odczyty dostają 45,
+        // bo od Etapu III.A2 każdy nowy e-mail i każda zmiana w panelu to odczyt (cache 10 s);
+        // przy 30 test czarnej skrzynki wyczerpywał je w kilka minut. CONTRACT.md §11.6.1.
         reserveCritical: readInt(env, "VOUCHERIFY_RESERVE_CRITICAL", 20, 0),
-        reserveCheckout: readInt(env, "VOUCHERIFY_RESERVE_CHECKOUT", 20, 0),
-        balanceCacheTtlMs: readInt(env, "LOYALTY_BALANCE_CACHE_SECONDS", 30, 0) * 1000,
+        reserveCheckout: readInt(env, "VOUCHERIFY_RESERVE_CHECKOUT", 25, 0),
+        // 10 s: zmiana salda w panelu Voucherify jest widoczna w sklepie najpóźniej po 10 s.
+        balanceCacheTtlMs: readInt(env, "LOYALTY_BALANCE_CACHE_SECONDS", 10, 0) * 1000,
         balanceStaleTtlMs: readInt(env, "LOYALTY_BALANCE_STALE_SECONDS", 600, 0) * 1000,
+        noCardCacheTtlMs: readInt(env, "LOYALTY_NO_CARD_CACHE_SECONDS", 10, 0) * 1000,
       };
     })(),
+    pointsSweep: {
+      enabled: readBool(env, "POINTS_SWEEP_ENABLED", true),
+      intervalMs: readInt(env, "POINTS_SWEEP_INTERVAL_MS", 2_000, 100),
+      batchSize: readInt(env, "POINTS_SWEEP_BATCH", 20, 1),
+    },
     resend: {
       apiKey: env.RESEND_API_KEY?.trim() || null,
       from: env.RESEND_FROM?.trim() || "PAS Kasa <onboarding@resend.dev>",
@@ -234,6 +273,10 @@ export function loadConfig(env: Env = process.env): AppConfig {
       leaseMs: readInt(env, "WORKER_LEASE_MS", 30_000, 500),
       baseBackoffMs: readInt(env, "WORKER_BASE_BACKOFF_MS", 2_000, 10),
       maxBackoffMs: readInt(env, "WORKER_MAX_BACKOFF_MS", 60_000, 100),
+      loyaltyRetryBaseMs: readInt(env, "WORKER_LOYALTY_RETRY_BASE_MS", 5_000, 100),
+      // Najwyżej minuta przerwy: po przywróceniu Voucherify punkty wracają w ≤ 2 min.
+      loyaltyRetryMaxMs: readInt(env, "WORKER_LOYALTY_RETRY_MAX_MS", 60_000, 100),
+      loyaltyRetryHorizonMs: readInt(env, "WORKER_LOYALTY_RETRY_HORIZON_HOURS", 24, 0) * 3_600_000,
     },
     overload: {
       maxInFlight: readInt(env, "LOAD_SHED_MAX_IN_FLIGHT", 80, 1),
@@ -259,6 +302,19 @@ export function loadConfig(env: Env = process.env): AppConfig {
       loyalty: {
         capacity: readInt(env, "RATE_LIMIT_LOYALTY_CAPACITY", 10, 1),
         refillPerSecond: readInt(env, "RATE_LIMIT_LOYALTY_PER_MINUTE", 6, 0) / 60,
+      },
+      // Checkout z punktami: per IP 12 na start i 6/h, per e-mail 6 na start i 6/h.
+      // Liczą się tylko żądania, które doszły do Voucherify (nie walidacja, 404/409 ani
+      // powtórka tej samej sesji); 503 oddaje żeton. 12 mieści test wyścigu z jednego IP
+      // (5 e-maili × 2 checkouty) z zapasem; jedno IP zużyje najwyżej ok. 36 wywołań
+      // naraz i 18/h dalej — reszta budżetu checkoutu zostaje innym (CONTRACT.md §11.6).
+      pointsCheckoutIp: {
+        capacity: readInt(env, "RATE_LIMIT_POINTS_IP_CAPACITY", 12, 1),
+        refillPerSecond: readInt(env, "RATE_LIMIT_POINTS_IP_PER_HOUR", 6, 0) / 3600,
+      },
+      pointsCheckoutEmail: {
+        capacity: readInt(env, "RATE_LIMIT_POINTS_EMAIL_CAPACITY", 6, 1),
+        refillPerSecond: readInt(env, "RATE_LIMIT_POINTS_EMAIL_PER_HOUR", 6, 0) / 3600,
       },
     },
     bulkhead: {
@@ -288,6 +344,7 @@ export function mergeConfig(base: AppConfig, override?: DeepPartial<AppConfig>):
     mail: { ...base.mail, ...override.mail },
     payments: { ...base.payments, ...override.payments },
     loyalty: { ...base.loyalty, ...override.loyalty },
+    pointsSweep: { ...base.pointsSweep, ...override.pointsSweep },
     resend: { ...base.resend, ...override.resend },
     worker: { ...base.worker, ...override.worker },
     overload: { ...base.overload, ...override.overload },
@@ -298,6 +355,8 @@ export function mergeConfig(base: AppConfig, override?: DeepPartial<AppConfig>):
       reservation: { ...base.rateLimit.reservation, ...override.rateLimit?.reservation },
       purchase: { ...base.rateLimit.purchase, ...override.rateLimit?.purchase },
       loyalty: { ...base.rateLimit.loyalty, ...override.rateLimit?.loyalty },
+      pointsCheckoutIp: { ...base.rateLimit.pointsCheckoutIp, ...override.rateLimit?.pointsCheckoutIp },
+      pointsCheckoutEmail: { ...base.rateLimit.pointsCheckoutEmail, ...override.rateLimit?.pointsCheckoutEmail },
     },
     bulkhead: {
       ...base.bulkhead,

@@ -87,24 +87,31 @@ export class TicketMailWorker {
       if (job.task !== SEND_TICKET_EMAIL_TASK) {
         throw new UnsupportedJobError(`Nieznane zadanie: ${job.task}`);
       }
-      const message = this.compose(job);
+      // Mail wysłany w poprzedniej próbie (job wrócił tylko po punkty): nie wysyłamy drugi raz.
+      // Gdyby proces padł między wysyłką a zapisem znacznika, Resend i tak zdeduplikuje
+      // powtórkę po Idempotency-Key = job.id.
+      const mailSent = job.input.mailSentAt !== undefined;
       let mailError: unknown = null;
-      try {
-        await withRetry(
-          () => this.dependencies.breaker.fire(() => this.dependencies.mailer.send(message, job.id)),
-          {
-            attempts: config.mail.retryAttempts,
-            baseDelayMs: config.mail.retryBaseDelayMs,
-            shouldRetry: (error) =>
-              !(error instanceof CircuitOpenError) &&
-              (!(error instanceof MailDeliveryError) || error.retryable),
-            onRetry: (error) => {
-              this.lastError = error instanceof Error ? error.message : String(error);
+      if (!mailSent) {
+        const message = this.compose(job);
+        try {
+          await withRetry(
+            () => this.dependencies.breaker.fire(() => this.dependencies.mailer.send(message, job.id)),
+            {
+              attempts: config.mail.retryAttempts,
+              baseDelayMs: config.mail.retryBaseDelayMs,
+              shouldRetry: (error) =>
+                !(error instanceof CircuitOpenError) &&
+                (!(error instanceof MailDeliveryError) || error.retryable),
+              onRetry: (error) => {
+                this.lastError = error instanceof Error ? error.message : String(error);
+              },
             },
-          },
-        );
-      } catch (error) {
-        mailError = error;
+          );
+          queue.patchInput(job.id, { mailSentAt: new Date(this.dependencies.clock()).toISOString() });
+        } catch (error) {
+          mailError = error;
+        }
       }
 
       // Punkty naliczamy niezależnie od poczty: nawet trwały błąd adresu nie może
@@ -122,16 +129,13 @@ export class TicketMailWorker {
         error instanceof MailDeliveryError && !error.retryable
           ? true
           : error instanceof MissingReservationError || error instanceof UnsupportedJobError;
-      // Wyczerpany budżet Voucherify albo 429: punkty czekają na limit (do godziny),
-      // a nie lądują w DLQ po kilku szybkich próbach.
-      const throttled =
-        error instanceof LoyaltyUnavailableError && error.cause instanceof LoyaltyThrottledError;
+      const deferMs = this.loyaltyDeferMs(job, error);
       const result = queue.fail(job.id, error, {
         maxAttempts: config.worker.maxAttempts,
         baseBackoffMs: config.worker.baseBackoffMs,
         maxBackoffMs: config.worker.maxBackoffMs,
         permanent,
-        ...(throttled ? { deferMs: (error.retryAfter ?? 60) * 1000 } : {}),
+        ...(deferMs !== null ? { deferMs } : {}),
       });
 
       this.failed += 1;
@@ -150,6 +154,26 @@ export class TicketMailWorker {
       dlq: this.dlq,
       lastError: this.lastError,
     };
+  }
+
+  /**
+   * Voucherify niedostępny (awaria, 401/5xx, timeout, otwarty bezpiecznik, limit): punkty
+   * czekają na zależność, a nie lądują w DLQ po kilku szybkich próbach. Zwraca czas do
+   * następnej próby albo null (zwykły błąd — liczony do `maxAttempts`).
+   *
+   * - limit (budżet albo 429): dokładnie tyle, ile kazał czekać (`Retry-After`),
+   * - awaria: odstęp rośnie z czasem życia joba (połowa dotychczasowego czekania,
+   *   od `loyaltyRetryBaseMs` do `loyaltyRetryMaxMs`) — bez licznika w bazie,
+   * - po `loyaltyRetryHorizonMs` od utworzenia joba: null, więc zwykłe próby i w końcu DLQ
+   *   (np. usunięta kampania nie może wisieć w kolejce w nieskończoność).
+   */
+  private loyaltyDeferMs(job: JobRecord, error: unknown): number | null {
+    if (!(error instanceof LoyaltyUnavailableError)) return null;
+    const { worker } = this.dependencies.config;
+    const age = Math.max(0, this.dependencies.clock() - Date.parse(job.createdAt));
+    if (age >= worker.loyaltyRetryHorizonMs) return null;
+    if (error.cause instanceof LoyaltyThrottledError) return (error.retryAfter ?? 60) * 1000;
+    return Math.min(worker.loyaltyRetryMaxMs, Math.max(worker.loyaltyRetryBaseMs, Math.round(age / 2)));
   }
 
   /** Naliczanie punktów jest idempotentne: znacznik w bazie i ponowna próba joba. */

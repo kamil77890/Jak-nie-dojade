@@ -68,11 +68,20 @@ describe("konfiguracja wdrożenia", () => {
     expect(defaults.loyalty).toMatchObject({
       hourlyBudget: 90,
       reserveCritical: 20,
-      reserveCheckout: 20,
-      balanceCacheTtlMs: 30_000,
+      reserveCheckout: 25,
+      balanceCacheTtlMs: 10_000,
       balanceStaleTtlMs: 600_000,
+      noCardCacheTtlMs: 10_000,
     });
     expect(defaults.rateLimit.loyalty).toEqual({ capacity: 10, refillPerSecond: 0.1 });
+    expect(defaults.rateLimit.pointsCheckoutIp).toEqual({ capacity: 12, refillPerSecond: 6 / 3600 });
+    expect(defaults.rateLimit.pointsCheckoutEmail).toEqual({ capacity: 6, refillPerSecond: 6 / 3600 });
+    expect(defaults.pointsSweep).toEqual({ enabled: true, intervalMs: 2_000, batchSize: 20 });
+    expect(defaults.worker).toMatchObject({
+      loyaltyRetryBaseMs: 5_000,
+      loyaltyRetryMaxMs: 60_000,
+      loyaltyRetryHorizonMs: 24 * 3_600_000,
+    });
 
     const tuned = loadConfig({
       VOUCHERIFY_HOURLY_BUDGET: "60",
@@ -82,6 +91,15 @@ describe("konfiguracja wdrożenia", () => {
       LOYALTY_BALANCE_STALE_SECONDS: "0",
       RATE_LIMIT_LOYALTY_CAPACITY: "4",
       RATE_LIMIT_LOYALTY_PER_MINUTE: "12",
+      LOYALTY_NO_CARD_CACHE_SECONDS: "60",
+      RATE_LIMIT_POINTS_IP_CAPACITY: "20",
+      RATE_LIMIT_POINTS_IP_PER_HOUR: "36",
+      RATE_LIMIT_POINTS_EMAIL_CAPACITY: "3",
+      RATE_LIMIT_POINTS_EMAIL_PER_HOUR: "0",
+      POINTS_SWEEP_ENABLED: "false",
+      POINTS_SWEEP_INTERVAL_MS: "5000",
+      WORKER_LOYALTY_RETRY_MAX_MS: "300000",
+      WORKER_LOYALTY_RETRY_HORIZON_HOURS: "2",
     });
     expect(tuned.loyalty).toMatchObject({
       hourlyBudget: 60,
@@ -89,8 +107,13 @@ describe("konfiguracja wdrożenia", () => {
       reserveCheckout: 5,
       balanceCacheTtlMs: 45_000,
       balanceStaleTtlMs: 0,
+      noCardCacheTtlMs: 60_000,
     });
     expect(tuned.rateLimit.loyalty).toEqual({ capacity: 4, refillPerSecond: 0.2 });
+    expect(tuned.rateLimit.pointsCheckoutIp).toEqual({ capacity: 20, refillPerSecond: 0.01 });
+    expect(tuned.rateLimit.pointsCheckoutEmail).toEqual({ capacity: 3, refillPerSecond: 0 });
+    expect(tuned.pointsSweep).toMatchObject({ enabled: false, intervalMs: 5_000 });
+    expect(tuned.worker).toMatchObject({ loyaltyRetryMaxMs: 300_000, loyaltyRetryHorizonMs: 2 * 3_600_000 });
 
     const warnings = configWarnings(
       loadConfig({ ...PAYMENTS_ENV, VOUCHERIFY_HOURLY_BUDGET: "120", VOUCHERIFY_RESERVE_CRITICAL: "130" }),

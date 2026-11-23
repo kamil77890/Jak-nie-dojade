@@ -42,7 +42,8 @@ describe("worker — praca w tle (E06)", () => {
     expect(jobs[0]?.state).toBe("done");
     expect(jobs[0]?.totalTried).toBe(1);
     expect(ctx.services.jobs.stats()).toMatchObject({ ready: 0, done: 1, dlq: 0 });
-    expect(jobs[0]?.input).toEqual({ reservationId });
+    // Znacznik wysłanego maila: ponowienie joba (np. tylko po punkty) nie wyśle go drugi raz.
+    expect(jobs[0]?.input).toEqual({ reservationId, mailSentAt: expect.any(String) });
     expect(ctx.mailer.calls[0]?.key).toBe(jobs[0]?.id);
   });
 

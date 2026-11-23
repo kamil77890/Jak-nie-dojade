@@ -24,6 +24,7 @@ export function accountRow(
 
 type ProviderCall =
   | { op: "createMember"; email: string; priority?: LoyaltyPriority }
+  | { op: "findMember"; email: string; priority?: LoyaltyPriority }
   | { op: "getBalance"; memberId: string; priority?: LoyaltyPriority }
   | { op: "adjustPoints"; memberId: string; delta: number; reason: string; priority?: LoyaltyPriority };
 
@@ -45,6 +46,23 @@ export class CountingLoyaltyProvider extends MemoryLoyaltyProvider {
     this.calls.push({ op: "createMember", email, priority });
     this.throwIfFailing("createMember");
     return super.createMember(email);
+  }
+
+  override async findMember(email: string, priority?: LoyaltyPriority) {
+    this.calls.push({ op: "findMember", email, priority });
+    this.throwIfFailing("findMember");
+    return super.findMember(email);
+  }
+
+  /** Karta założona poza sklepem (panel Voucherify, kasa) — bez wywołań na liście. */
+  seedCard(email: string, balance: number): void {
+    this.balances.set(email, balance);
+    if (balance > 0) this.credited.add(email);
+  }
+
+  /** Korekta „w panelu” — poza naszym procesem, nie liczy się do wywołań. */
+  panelAdjust(email: string, delta: number): void {
+    this.balances.set(email, (this.balances.get(email) ?? 0) + delta);
   }
 
   override async getBalance(memberId: string, priority?: LoyaltyPriority) {
@@ -87,7 +105,11 @@ function jsonResponse(body: unknown, status = 200, headers: Record<string, strin
  */
 export function stubVoucherify() {
   const balances = new Map<string, number>();
-  const state: { rateLimitedFor: string | null; down: boolean } = { rateLimitedFor: null, down: false };
+  const state: { rateLimitedFor: string | null; down: boolean; status?: number; allowNegative: boolean } = {
+    rateLimitedFor: null,
+    down: false,
+    allowNegative: false,
+  };
   const calls: Array<{ method: string; path: string }> = [];
 
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
@@ -97,14 +119,14 @@ export function stubVoucherify() {
     if (state.rateLimitedFor !== null) {
       return jsonResponse({ code: 429, message: "Too many requests" }, 429, { "retry-after": state.rateLimitedFor });
     }
-    if (state.down) return jsonResponse({ message: "internal db shard-7 timeout (secret)" }, 503);
+    if (state.down) return jsonResponse({ message: "internal db shard-7 timeout (secret)" }, state.status ?? 503);
 
     const body = typeof init?.body === "string" ? (JSON.parse(init.body) as Record<string, unknown>) : {};
     const balanceMatch = /^\/v1\/loyalties\/members\/([^/]+)\/balance$/.exec(url.pathname);
     if (method === "POST" && balanceMatch) {
       const card = decodeURIComponent(balanceMatch[1]!);
       const next = (balances.get(card) ?? 0) + Number(body.points);
-      if (next < 0) return jsonResponse({ code: 400, message: "Not enough points" }, 400);
+      if (next < 0 && !state.allowNegative) return jsonResponse({ code: 400, message: "Not enough points" }, 400);
       balances.set(card, next);
       return jsonResponse({ points: body.points, balance: next });
     }
@@ -112,6 +134,13 @@ export function stubVoucherify() {
     if (method === "GET" && memberMatch) {
       const card = decodeURIComponent(memberMatch[1]!);
       return jsonResponse({ code: card, loyalty_card: { balance: balances.get(card) ?? 0 } });
+    }
+    if (method === "GET" && /^\/v1\/loyalties\/[^/]+\/members$/.test(url.pathname)) {
+      const card = `CARD-${url.searchParams.get("customer") ?? ""}`;
+      const balance = balances.get(card);
+      return jsonResponse({
+        data: balance === undefined ? [] : [{ code: card, loyalty_card: { balance, points: Math.max(0, balance) } }],
+      });
     }
     if (method === "POST" && /^\/v1\/loyalties\/[^/]+\/members$/.test(url.pathname)) {
       const customer = body.customer as { source_id: string };

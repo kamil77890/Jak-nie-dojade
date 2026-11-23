@@ -6,10 +6,10 @@ import type {
   PurchaseResponse,
   ReservationStatusResponse,
 } from "@pas/shared";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BookingService } from "../booking";
 import { type CheckoutService, isValidIdempotencyKey } from "../checkout";
-import { IdempotencyKeyRequiredError, ValidationError } from "../errors";
+import { HttpError, IdempotencyKeyRequiredError, ValidationError } from "../errors";
 import type { LoyaltyService } from "../loyalty";
 import type { Guard } from "./events";
 
@@ -22,7 +22,19 @@ interface ReservationRouteDependencies {
   loyaltyGuards: Guard[];
   reservationGuards: Guard[];
   purchaseGuards: Guard[];
+  /** Limit checkoutów z punktami per IP i per e-mail (budżet Voucherify). */
+  pointsCharge?: PointsChargeFactory;
 }
+
+/**
+ * Limit checkoutu z punktami dla jednego żądania: `charge` pobiera żetony (albo rzuca
+ * 429 RATE_LIMITED), `refund` je oddaje, gdy żądanie skończyło się 503 — klient nie
+ * dostał usługi, więc ponowienie po awarii nie może go zablokować.
+ */
+export type PointsChargeFactory = (request: FastifyRequest) => {
+  charge: (email: string) => void;
+  refund: () => void;
+};
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 const MAX_NAME = 80;
@@ -56,8 +68,9 @@ export function registerReservationRoutes(
     },
   );
 
-  // Karta A: saldo punktów klienta. E-mail, który jeszcze nic nie kupił, ma 1000 punktów
-  // (bez wywołania Voucherify — kartę zakładamy dopiero przy pierwszym zapisie punktów).
+  // Karta A: saldo punktów klienta. E-mail, który jeszcze nic nie kupił, ma 1000 punktów.
+  // E-mail bez mapowania kosztuje jedno wyszukanie karty w Voucherify (karta z panelu/kasy
+  // pokazuje prawdziwe saldo); kartę zakładamy dopiero przy pierwszym zapisie punktów.
   // 400 zły e-mail, 429 limit per IP, 503 LOYALTY_UNAVAILABLE z Retry-After.
   app.get<{ Querystring: { email?: unknown } }>(
     "/api/loyalty",
@@ -80,7 +93,16 @@ export function registerReservationRoutes(
       const key = typeof header === "string" ? header.trim() : "";
       if (!isValidIdempotencyKey(key)) throw new IdempotencyKeyRequiredError();
 
-      return dependencies.checkout.startCheckout(reservationId, key, readPoints(request.body));
+      const points = readPoints(request.body);
+      const limit = dependencies.pointsCharge?.(request);
+      try {
+        return await dependencies.checkout.startCheckout(reservationId, key, points, {
+          ...(limit ? { chargePoints: limit.charge } : {}),
+        });
+      } catch (error) {
+        if (error instanceof HttpError && error.statusCode === 503) limit?.refund();
+        throw error;
+      }
     },
   );
 

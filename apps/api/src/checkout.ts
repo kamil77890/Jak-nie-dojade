@@ -6,13 +6,14 @@ import { type Db, transaction } from "./db";
 import {
   InsufficientPointsError,
   InvalidSignatureError,
+  LoyaltyUnavailableError,
   PaymentsUnavailableError,
   PointsLimitExceededError,
   ReservationPaidError,
   ValidationError,
 } from "./errors";
 import { type JobQueue, REFUND_POINTS_TASK } from "./jobs";
-import type { LoyaltyService } from "./loyalty";
+import { type LoyaltyService, OverdrawnError, type SpendLock } from "./loyalty";
 import {
   type ExpireCheckoutResult,
   InvalidWebhookSignatureError,
@@ -30,6 +31,31 @@ export function isValidIdempotencyKey(key: string): boolean {
 
 /** Stripe nie przyjmie sesji krótszej niż 30 min; doliczamy zapas na drogę requestu. */
 const MIN_STRIPE_SESSION_MS = 31 * 60_000;
+
+/** Zamiatanie porzuconych sesji: backoff po błędzie Stripe'a/Voucherify (2 s → 60 s). */
+const SWEEP_BASE_BACKOFF_MS = 2_000;
+const SWEEP_MAX_BACKOFF_MS = 60_000;
+/** Sesja opłacona u Stripe'a czeka na webhook; sprawdzamy ją znowu najwcześniej po minucie. */
+const SWEEP_PAID_RECHECK_MS = 60_000;
+
+export interface StartCheckoutOptions {
+  /**
+   * Wołane raz, tuż przed pierwszym wywołaniem Voucherify w checkoucie z punktami
+   * (limit per IP i per e-mail). Rzuca `RateLimitedError`, gdy limit się wyczerpał.
+   */
+  chargePoints?: (email: string) => void;
+}
+
+export interface SweepResult {
+  /** Sesje sprawdzone w tym przebiegu (bez tych, które czekają na backoff). */
+  scanned: number;
+  /** Sesje, których punkty właśnie wróciły na kartę. */
+  released: number;
+  /** Sesje opłacone u Stripe'a — bilet albo zwrot zrobi webhook. */
+  paid: number;
+  /** Błąd Stripe'a albo Voucherify — ponowimy w następnym przebiegu. */
+  failed: number;
+}
 
 interface CheckoutSessionRow {
   id: string;
@@ -77,6 +103,8 @@ export class CheckoutService {
   private readonly locks = new Map<string, Promise<unknown>>();
   /** Trwające zwroty punktów per sesja — równoległy webhook czeka na ten sam wynik. */
   private readonly releasing = new Map<string, Promise<number>>();
+  /** Zamiatanie: kiedy najwcześniej znowu spróbować danej sesji (po błędzie albo „opłacona”). */
+  private readonly sweepBackoff = new Map<string, { until: number; delay: number }>();
 
   constructor(private readonly options: CheckoutServiceOptions) {}
 
@@ -88,6 +116,7 @@ export class CheckoutService {
     reservationId: string,
     idempotencyKey: string,
     points: number = 0,
+    options: StartCheckoutOptions = {},
   ): Promise<CheckoutResponse> {
     if (!this.options.gateway) throw new PaymentsUnavailableError();
 
@@ -95,7 +124,74 @@ export class CheckoutService {
       throw new ValidationError("Liczba punktów musi być nieujemną liczbą całkowitą.");
     }
 
-    return this.withLock(reservationId, () => this.checkoutLocked(reservationId, idempotencyKey, points));
+    return this.withLock(reservationId, () =>
+      this.checkoutLocked(reservationId, idempotencyKey, points, options.chargePoints),
+    );
+  }
+
+  /**
+   * III.B4: punkty z sesji porzuconej rezerwacji wracają kilka sekund po `expiresAt`,
+   * a nie dopiero po `checkout.session.expired` (Stripe nie wygasi sesji wcześniej niż
+   * po 30 min). Woła to cyklicznie `PointsReleaseSweeper`.
+   *
+   * Dla każdej sesji z niezwróconymi punktami, której rezerwacja wygasła (albo która jest
+   * już wygaszona, a zwrot się wcześniej nie udał):
+   * 1. najpierw Stripe: wygaszamy sesję (ten sam klucz `pas-expire-<id>` co przy zmianie
+   *    punktów). Po tym klient nie może jej już opłacić. Stripe mówi „opłacona” → nic nie
+   *    ruszamy: bilet albo zwrot pieniędzy i punktów zrobi webhook `completed`;
+   * 2. status `expired` w bazie;
+   * 3. zwrot punktów przez `releaseSessionPoints` — dokładnie raz, wspólny z webhookiem
+   *    `checkout.session.expired`, który Stripe i tak potem przyśle.
+   * Błąd Stripe'a albo Voucherify (awaria, limit) = sesja czeka na następną próbę
+   * z backoffem; stan jest w bazie, więc restart niczego nie gubi.
+   */
+  async releaseAbandonedSessionPoints(limit = 20): Promise<SweepResult> {
+    const result: SweepResult = { scanned: 0, released: 0, paid: 0, failed: 0 };
+    const { db, clock, gateway } = this.options;
+    if (!gateway) return result;
+
+    const now = clock();
+    const rows = db
+      .prepare(
+        `SELECT s.id AS id, s.reservation_id AS reservation_id
+         FROM checkout_sessions s
+         JOIN reservations r ON r.id = s.reservation_id
+         WHERE s.points_used > 0
+           AND s.points_refunded_at IS NULL
+           AND (r.paid_session_id IS NULL OR r.paid_session_id <> s.id)
+           AND ((s.status = 'open' AND r.expires_at <= ?) OR s.status = 'expired')
+         ORDER BY s.created_at ASC
+         LIMIT ?`,
+      )
+      .all(new Date(now).toISOString(), Math.max(1, limit)) as unknown as Array<{
+      id: string;
+      reservation_id: string;
+    }>;
+
+    for (const row of rows) {
+      const backoff = this.sweepBackoff.get(row.id);
+      if (backoff && backoff.until > now) continue;
+      result.scanned += 1;
+      try {
+        const outcome = await this.withLock(row.reservation_id, () => this.sweepSession(row.id));
+        if (outcome === "paid") {
+          // Opłacona u Stripe'a: czekamy na webhook, ale nie pytamy Stripe'a co kilka sekund.
+          result.paid += 1;
+          this.sweepBackoff.set(row.id, { until: clock() + SWEEP_PAID_RECHECK_MS, delay: SWEEP_PAID_RECHECK_MS });
+        } else {
+          if (outcome === "released") result.released += 1;
+          this.sweepBackoff.delete(row.id);
+        }
+      } catch (error) {
+        result.failed += 1;
+        const delay =
+          error instanceof LoyaltyUnavailableError && error.retryAfter !== undefined && error.retryAfter > 5
+            ? error.retryAfter * 1000
+            : Math.min(SWEEP_MAX_BACKOFF_MS, Math.max(SWEEP_BASE_BACKOFF_MS, (backoff?.delay ?? 0) * 2));
+        this.sweepBackoff.set(row.id, { until: clock() + delay, delay });
+      }
+    }
+    return result;
   }
 
   /**
@@ -161,6 +257,7 @@ export class CheckoutService {
     reservationId: string,
     idempotencyKey: string,
     points: number,
+    chargePoints?: (email: string) => void,
   ): Promise<CheckoutResponse> {
     const { bookings, loyalty } = this.options;
 
@@ -176,25 +273,70 @@ export class CheckoutService {
     const open = this.findOpen(reservationId);
     if (open && open.points_used === points) return { url: open.url };
 
-    if (points > 0) {
+    if (points === 0) {
+      // Bez punktów nie rozmawiamy z Voucherify wcale (poza zwrotem punktów zastępowanej
+      // sesji), więc płatność samą kartą działa i bez niego.
+      if (open) await this.replaceSession(open);
+      return this.createSession(reservation, idempotencyKey, 0, null);
+    }
+
+    // Limit checkoutów z punktami per IP i per e-mail (budżet Voucherify). Liczony dopiero
+    // tutaj: walidacja, 404/409 i powtórka tej samej sesji nic u Voucherify nie kosztują.
+    chargePoints?.(reservation.email);
+
+    // Sprawdzenie salda i pobranie punktów pod blokadą e-maila: dwa równoległe checkouty
+    // na jednym saldzie (dwie rezerwacje) idą jeden po drugim, a drugi widzi saldo po
+    // pobraniu pierwszego. Nie polegamy na tym, że Voucherify odrzuci saldo ujemne.
+    return loyalty.withSpendLock(reservation.email, async (lock) => {
+      // Czekając na blokadę, rezerwacja mogła wygasnąć albo zostać opłacona.
+      const payable = bookings.assertPayable(reservationId);
+
       // Punkty z wygasłych sesji tej rezerwacji, których zwrot wcześniej się nie udał
-      // (Voucherify padł) — oddajemy je teraz, zanim policzymy saldo. Bez punktów nie
-      // rozmawiamy z Voucherify wcale, więc płatność samą kartą działa i bez niego.
+      // (Voucherify padł) — oddajemy je teraz, zanim policzymy saldo.
       for (const sessionId of this.unreleasedExpiredSessions(reservationId)) {
         await this.releaseSessionPoints(sessionId);
       }
-      // Saldo sprawdzamy przed czymkolwiek nieodwracalnym. Punkty zastępowanej sesji
-      // wrócą przed pobraniem nowych, więc liczą się do dostępnego salda.
+      // Saldo sprawdzamy (świeżo, nie z cache) przed czymkolwiek nieodwracalnym. Punkty
+      // zastępowanej sesji wrócą przed pobraniem nowych, więc liczą się do salda.
       const returning = open && !open.points_refunded_at ? open.points_used : 0;
-      const balance = await loyalty.getBalance(reservation.email);
-      if (balance + returning < points) throw new InsufficientPointsError();
+      await loyalty.assertCanSpend(lock, points - returning);
+
+      // Klient zmienił liczbę punktów: stara sesja ma inną kwotę niż „Zapłać X” w UI.
+      // Wygaszamy ją u Stripe'a, oddajemy jej punkty i tworzymy nową.
+      if (open) await this.replaceSession(open);
+
+      return this.createSession(payable, idempotencyKey, points, lock);
+    });
+  }
+
+  /** Jeden krok zamiatania (pod blokadą rezerwacji) — patrz `releaseAbandonedSessionPoints`. */
+  private async sweepSession(sessionId: string): Promise<"released" | "paid" | "skipped"> {
+    const { db, clock, gateway, breaker } = this.options;
+    // Stan mógł się zmienić, gdy czekaliśmy na blokadę (webhook, checkout, inny zwrot).
+    const row = db
+      .prepare(
+        `SELECT s.status AS status, s.points_refunded_at AS refunded, r.expires_at AS expires_at,
+                r.paid_session_id AS paid_session_id
+         FROM checkout_sessions s JOIN reservations r ON r.id = s.reservation_id
+         WHERE s.id = ? AND s.points_used > 0`,
+      )
+      .get(sessionId) as unknown as
+      | { status: string; refunded: string | null; expires_at: string; paid_session_id: string | null }
+      | undefined;
+    if (!row || row.refunded || row.paid_session_id === sessionId) return "skipped";
+
+    if (row.status === "open") {
+      if (Date.parse(row.expires_at) > clock()) return "skipped";
+      // Najpierw Stripe: po wygaszeniu sesji klient nie zapłaci już kwoty ze zniżką.
+      const state = await breaker.fire(() => gateway!.expireCheckoutSession(sessionId, `pas-expire-${sessionId}`));
+      if (state === "complete") return "paid";
+      transaction(db, () => this.setSessionStatus(sessionId, "expired", null, ["open"]));
+    } else if (row.status !== "expired") {
+      return "skipped";
     }
 
-    // Klient zmienił liczbę punktów: stara sesja ma inną kwotę niż „Zapłać X” w UI.
-    // Wygaszamy ją u Stripe'a, oddajemy jej punkty i tworzymy nową.
-    if (open) await this.replaceSession(open);
-
-    return this.createSession(reservation, idempotencyKey, points);
+    const returned = await this.releaseSessionPoints(sessionId);
+    return returned > 0 ? "released" : "skipped";
   }
 
   /**
@@ -319,6 +461,7 @@ export class CheckoutService {
     reservation: ReturnType<BookingService["assertPayable"]>,
     idempotencyKey: string,
     points: number,
+    lock: SpendLock | null,
   ): Promise<CheckoutResponse> {
     const { gateway, breaker, catalog, publicUrl, clock, loyalty } = this.options;
     const event = catalog.getEvent(reservation.eventId);
@@ -341,7 +484,20 @@ export class CheckoutService {
     const expiresAt = Date.parse(reservation.expiresAt) + MIN_STRIPE_SESSION_MS;
 
     // Punkty schodzą przed utworzeniem sesji; jeśli Stripe odmówi, wracają na kartę.
-    if (points > 0) await loyalty.spendPoints(reservation.email, points);
+    if (points > 0) {
+      if (!lock) throw new Error("Pobranie punktów wymaga blokady e-maila.");
+      try {
+        await loyalty.spendPoints(lock, points);
+      } catch (error) {
+        // Dostawca przyjął saldo ujemne (ktoś wydał punkty poza nami między odczytem
+        // a pobraniem): oddajemy pobrane punkty i odmawiamy jak przy braku punktów.
+        if (error instanceof OverdrawnError) {
+          await this.returnSpentPoints(reservation.id, reservation.email, error.points, "overdrawn");
+          throw new InsufficientPointsError();
+        }
+        throw error;
+      }
+    }
 
     let session;
     try {
@@ -364,7 +520,7 @@ export class CheckoutService {
     } catch (error) {
       // Stripe nie odpowiada, odmówił albo bezpiecznik jest otwarty: rezerwacja zostaje,
       // a punkty wracają, żeby klient mógł spróbować ponownie z tym samym kluczem.
-      if (points > 0) await this.returnPointsAfterStripeFailure(reservation.id, reservation.email, points);
+      if (points > 0) await this.returnSpentPoints(reservation.id, reservation.email, points, "stripe_session_failed");
       throw new PaymentsUnavailableError(5, error);
     }
 
@@ -392,23 +548,25 @@ export class CheckoutService {
   }
 
   /**
-   * Stripe nie utworzył sesji, a punkty już zeszły z karty. Próbujemy oddać je od razu;
-   * gdy Voucherify też nie odpowiada, zwrot trafia do kolejki jobów (retry z backoffem,
-   * czekanie na limit, DLQ widoczne w /lab) zamiast przepaść. Każde wywołanie odpowiada
+   * Punkty już zeszły z karty, a sesji nie będzie: Stripe jej nie utworzył albo pobranie
+   * zeszło poniżej zera (`overdrawn`). Próbujemy oddać je od razu; gdy Voucherify nie
+   * odpowiada, zwrot trafia do kolejki jobów (czekanie na Voucherify z backoffem do 24 h,
+   * potem DLQ widoczne w /lab) zamiast przepaść. Każde wywołanie odpowiada
    * dokładnie jednemu pobraniu punktów (ponowienie z tym samym kluczem pobiera je od nowa),
    * więc każde dostaje własny job — wspólne id zgubiłoby drugi zwrot.
    */
-  private async returnPointsAfterStripeFailure(
+  private async returnSpentPoints(
     reservationId: string,
     email: string,
     points: number,
+    reason: "stripe_session_failed" | "overdrawn",
   ): Promise<void> {
     try {
       await this.options.loyalty.awardPoints(email, points);
     } catch {
       this.options.jobs.enqueue(
         REFUND_POINTS_TASK,
-        { reservationId, email, points, reason: "stripe_session_failed" },
+        { reservationId, email, points, reason },
         { now: this.options.clock() },
       );
     }
