@@ -29,7 +29,12 @@ export async function registerWebhookRoutes(
       const result = await dependencies.checkout.handleWebhook(request.body, signature);
       if (result.outcome?.kind === "refund") {
         request.log.warn(
-          { eventId: result.eventId, reason: result.outcome.reason, refunded: result.refunded },
+          {
+            eventId: result.eventId,
+            reason: result.outcome.reason,
+            refunded: result.refunded,
+            pointsReturned: result.pointsReturned,
+          },
           "Płatność bez biletu — zwrot",
         );
       }

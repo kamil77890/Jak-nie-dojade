@@ -6,6 +6,7 @@ import { MailDeliveryError, type Mailer, type SendResult, type TicketMail } from
 import {
   type CheckoutSessionInput,
   type CreatedCheckoutSession,
+  type ExpireCheckoutResult,
   type PaymentGateway,
   PaymentProviderError,
   type PaymentWebhookEvent,
@@ -41,6 +42,19 @@ export class FakePaymentGateway implements PaymentGateway {
     this.calls += 1;
     if (this.failWith) throw this.failWith;
     if (!this.refunds.some((refund) => refund.key === key)) this.refunds.push({ paymentIntentId, key });
+  }
+
+  /** Sesje wygaszone przez API (zmiana punktów); powtórka tej samej sesji nie dubluje wpisu. */
+  expired: Array<{ sessionId: string; key: string }> = [];
+  /** Sesje, które klient zdążył opłacić u Stripe'a — tych nie da się wygasić. */
+  completed = new Set<string>();
+
+  async expireCheckoutSession(sessionId: string, key: string): Promise<ExpireCheckoutResult> {
+    this.calls += 1;
+    if (this.failWith) throw this.failWith;
+    if (this.completed.has(sessionId)) return "complete";
+    if (!this.expired.some((item) => item.sessionId === sessionId)) this.expired.push({ sessionId, key });
+    return "expired";
   }
 
   verifyWebhook(rawBody: Buffer, signature: string): PaymentWebhookEvent {

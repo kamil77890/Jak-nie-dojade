@@ -37,8 +37,19 @@ export interface PaymentWebhookEvent {
   };
 }
 
+/**
+ * Stan sesji po próbie wygaszenia. `complete` = klient zdążył zapłacić (albo płaci),
+ * więc sesji nie wolno zastąpić nową, a jej punkty nie wracają.
+ */
+export type ExpireCheckoutResult = "expired" | "complete";
+
 export interface PaymentGateway {
   createCheckoutSession(input: CheckoutSessionInput, idempotencyKey: string): Promise<CreatedCheckoutSession>;
+  /**
+   * Wygasza otwartą sesję (zmiana liczby punktów). Idempotentne: sesja już wygasła
+   * daje `expired`, opłacona — `complete`.
+   */
+  expireCheckoutSession(sessionId: string, idempotencyKey: string): Promise<ExpireCheckoutResult>;
   refund(paymentIntentId: string, idempotencyKey: string): Promise<void>;
   /** Rzuca `InvalidWebhookSignatureError`, gdy podpis się nie zgadza. */
   verifyWebhook(rawBody: Buffer, signature: string): PaymentWebhookEvent;
@@ -161,6 +172,21 @@ export class StripeGateway implements PaymentGateway {
     );
   }
 
+  async expireCheckoutSession(sessionId: string, idempotencyKey: string): Promise<ExpireCheckoutResult> {
+    try {
+      const session = await this.stripe.checkout.sessions.expire(sessionId, {}, { idempotencyKey });
+      return session.status === "complete" ? "complete" : "expired";
+    } catch (error) {
+      // Stripe odmawia wygaszenia sesji, która nie jest `open` (już wygasła albo opłacona).
+      // Wtedy pytamy o jej faktyczny stan zamiast zgadywać.
+      if (!(error instanceof Stripe.errors.StripeInvalidRequestError)) throw toProviderError(error);
+    }
+    const current = await this.call(() => this.stripe.checkout.sessions.retrieve(sessionId));
+    if (current.status === "expired") return "expired";
+    if (current.status === "complete") return "complete";
+    throw new PaymentProviderError(`Stripe: sesja ${sessionId} ma stan ${current.status}`, false);
+  }
+
   verifyWebhook(rawBody: Buffer, signature: string): PaymentWebhookEvent {
     return verifyStripeWebhook(rawBody, signature, this.options.webhookSecret);
   }
@@ -169,17 +195,21 @@ export class StripeGateway implements PaymentGateway {
     try {
       return await operation();
     } catch (error) {
-      if (error instanceof Stripe.errors.StripeError) {
-        const status = error.statusCode ?? 0;
-        const retryable =
-          error instanceof Stripe.errors.StripeConnectionError ||
-          error instanceof Stripe.errors.StripeRateLimitError ||
-          status >= 500;
-        throw new PaymentProviderError(`Stripe: ${error.type} ${status} ${error.message}`, retryable);
-      }
-      throw new PaymentProviderError(`Stripe: ${String(error)}`, true);
+      throw toProviderError(error);
     }
   }
+}
+
+function toProviderError(error: unknown): PaymentProviderError {
+  if (error instanceof Stripe.errors.StripeError) {
+    const status = error.statusCode ?? 0;
+    const retryable =
+      error instanceof Stripe.errors.StripeConnectionError ||
+      error instanceof Stripe.errors.StripeRateLimitError ||
+      status >= 500;
+    return new PaymentProviderError(`Stripe: ${error.type} ${status} ${error.message}`, retryable);
+  }
+  return new PaymentProviderError(`Stripe: ${String(error)}`, true);
 }
 
 /** Klucze live są zakazane: Etap II działa wyłącznie w trybie testowym Stripe'a. */
