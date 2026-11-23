@@ -6,9 +6,9 @@ Zakres: konta punktowe w Voucherify, płatność punktami w Stripe Checkout, nal
 
 | Obszar | Realizacja |
 | --- | --- |
-| Saldo punktów | `GET /api/loyalty?email=…` → `{ email, points }`; e-mail bez karty ma 1000 punktów (jedno wyszukanie karty w Voucherify, bez zakładania karty); karta założona w panelu/kasie pokazuje swoje saldo |
+| Saldo punktów | `GET /api/loyalty?email=…` → `{ email, points }`; e-mail bez karty ma 1000 punktów bez wywołania Voucherify (wyszukanie karty z panelu/kasy tylko z `LOYALTY_LOOKUP_UNKNOWN_CARDS=true`); niezakodowany `+` w `?email=` działa |
 | Źródło prawdy | Voucherify (karta lojalnościowa per e-mail); SQLite tylko mapuje e-mail → `member_id`; cache salda 10 s w pamięci to tylko optymalizacja odczytu, checkout czyta saldo świeżo |
-| Limit Voucherify (100/h) | budżet 90/h z priorytetami (odczyt do 45 < checkout do 70 < zwrot/naliczenie do 90), `429` od Voucherify respektuje `Retry-After`, limit per IP na `GET /api/loyalty`, limit per IP i per e-mail na checkout z punktami |
+| Limit Voucherify (100/h) | budżet 90/h z priorytetami (odczyt do 15 < checkout do 70, rezerwa 55 < zwrot/naliczenie do 90), `429` od Voucherify respektuje `Retry-After`, limit per IP na `GET /api/loyalty`, limit per IP i per e-mail na checkout z punktami |
 | Płatność punktami | `POST /api/reservations/:id/checkout` z `{ points }`; 1 pkt = 1 gr, maks. połowa ceny |
 | Naliczanie | 10 pkt za każdy pełny złoty zapłacony kartą; `pointsEarned` liczone przy webhooku |
 | Status | `GET /api/reservations/:id` zwraca `pointsUsed` (zawsze) i `pointsEarned` (tylko po opłaceniu) |
@@ -31,8 +31,8 @@ Zakres: konta punktowe w Voucherify, płatność punktami w Stripe Checkout, nal
 6. **Resend tylko z kluczem.** Bez `RESEND_API_KEY` działa dotychczasowy mock HTTP, więc Etap I/II i testy nie wymagają konta.
 7. **Jeden mechanizm zwrotu punktów.** `CheckoutService.releaseSessionPoints`: znacznik `points_refunded_at` stawiany w transakcji przed wywołaniem Voucherify i zdejmowany, gdy ono padnie. Webhook zapisuje zdarzenie dopiero po zwrocie pieniędzy i punktów, więc ponowienie od Stripe'a dokańcza brakujące kroki. `confirmPayment` nie wyda biletu z sesji, której punkty już wróciły.
 8. **`pointsUsed` przed płatnością** = punkty pobrane na sesje tej rezerwacji i jeszcze niezwrócone (zgadza się ze spadkiem salda); `pointsEarned` występuje tylko przy `paid`.
-9. **Leniwe konto punktowe.** Kto nic nie kupił, ma z definicji 1000 punktów — `GET /api/loyalty` nie zakłada karty (literówka w polu e-mail nie tworzy karty). Dla e-maila bez mapowania robi jedno wyszukanie karty (priorytet odczytu, wynik „brak karty” pamiętany 10 s): karta założona w panelu albo w kasie dostaje mapowanie i liczy się jej saldo (III.A2). Bez budżetu odczytów albo przy awarii odpowiada 1000 bez `503` — checkout i tak sprawdza prawdziwą kartę przed pobraniem. Karta + bonus powstają przy pierwszym zapisie: pobraniu punktów w checkoucie albo naliczeniu po zakupie. Bonus jest „zajmowany” w bazie przed korektą (`welcome_pending`), więc równoległe requesty nie dadzą go dwa razy; karta, która w Voucherify już ma historię punktów (zgubione mapowanie), bonusu nie dostaje; próba z niepewnym wynikiem (timeout) przed ponowieniem sprawdza saldo.
-10. **Budżet wywołań Voucherify.** Sandbox przyjmuje najwyżej 100 wywołań/h. `CallBudget` (okno przesuwne 1 h, domyślnie 90) liczy każde wyjście do sieci, także ponowienia. Priorytety: odczyt salda do 45, checkout do 70 (co najmniej 25 tylko dla niego), zwrot punktów i naliczenie po zakupie do 90 (co najmniej 20 tylko dla nich); progi liczą wszystkie wywołania w oknie, więc po 45 wywołaniach w godzinie odczyty (także wyszukanie karty z panelu) są wstrzymane — zalew odczytów nie zablokuje zakupów ani zwrotów. Koszt wywołań na zakup i przepustowość: CONTRACT.md §11.6.1 (ok. 18 zakupów z punktami nowych klientów albo ok. 22 stałych na godzinę). Odmowa = `503 LOYALTY_UNAVAILABLE` z `Retry-After` do zwolnienia miejsca (dla samego wyświetlenia — niedawne saldo z cache, jeśli jest). Job naliczenia czeka na okno bez zużywania prób, więc punkty nie lądują w DLQ.
+9. **Leniwe konto punktowe.** Kto nic nie kupił, ma z definicji 1000 punktów — `GET /api/loyalty` nie zakłada karty (literówka w polu e-mail nie tworzy karty). Domyślnie nie pyta przy tym Voucherify (oficjalne kryteria nie sprawdzają kart z panelu, a test używa wielu adresów `delivered+…@resend.dev`); z `LOYALTY_LOOKUP_UNKNOWN_CARDS=true` robi jedno wyszukanie karty (wynik „brak karty” pamiętany 10 s) i karta z panelu albo kasy dostaje mapowanie. Bez budżetu odczytów albo przy awarii odpowiada 1000 bez `503` — checkout i tak sprawdza prawdziwą kartę przed pobraniem. Karta + bonus powstają przy pierwszym zapisie: pobraniu punktów w checkoucie albo naliczeniu po zakupie. Bonus jest „zajmowany” w bazie przed korektą (`welcome_pending`), więc równoległe requesty nie dadzą go dwa razy; karta, która w Voucherify już ma historię punktów (zgubione mapowanie), bonusu nie dostaje; próba z niepewnym wynikiem (timeout) przed ponowieniem sprawdza saldo.
+10. **Budżet wywołań Voucherify.** Sandbox przyjmuje najwyżej 100 wywołań/h. `CallBudget` (okno przesuwne 1 h, domyślnie 90) liczy każde wyjście do sieci, także ponowienia. Priorytety: odczyt salda do 15, checkout do 70 (co najmniej 55 tylko dla niego), zwrot punktów i naliczenie po zakupie do 90 (co najmniej 20 tylko dla nich); progi liczą wszystkie wywołania w oknie, więc po 45 wywołaniach w godzinie odczyty (także wyszukanie karty z panelu) są wstrzymane — zalew odczytów nie zablokuje zakupów ani zwrotów. Koszt wywołań na zakup i przepustowość: CONTRACT.md §11.6.1 (ok. 18 zakupów z punktami nowych klientów albo ok. 22 stałych na godzinę). Odmowa = `503 LOYALTY_UNAVAILABLE` z `Retry-After` do zwolnienia miejsca (dla samego wyświetlenia — niedawne saldo z cache, jeśli jest). Job naliczenia czeka na okno bez zużywania prób, więc punkty nie lądują w DLQ.
 11. **429 od Voucherify.** Bez natychmiastowego ponowienia; `Retry-After` blokuje wszystkie wywołania do Voucherify i wraca do klienta. 429 nie grzeje bezpiecznika — Voucherify działa, tylko każe czekać, a dokładny czas zna z nagłówka.
 12. **Cache salda.** 10 s w pamięci procesu (zmiana w panelu widoczna w ≤ 10 s), nadpisywany wynikiem każdej naszej korekty (spend/award/zwrot), czyszczony po nieudanej korekcie. Checkout go nie używa.
 13. **Korekta salda bez automatycznego retry.** `POST /balance` nie jest idempotentne — ponowienie po timeoucie mogło pobrać punkty dwa razy. Ponawiamy tylko odczyty i zakładanie karty.
@@ -52,13 +52,14 @@ LOYALTY_PROVIDER=auto                          # memory tylko do demo/testów
 LOYALTY_WELCOME_POINTS=1000
 VOUCHERIFY_HOURLY_BUDGET=90                    # Sandbox: maks. 100 wywołań/h
 VOUCHERIFY_RESERVE_CRITICAL=20                 # tylko zwroty i naliczenia
-VOUCHERIFY_RESERVE_CHECKOUT=25                 # checkout do 90-20 = 70; odczyty do 90-20-25 = 45
+VOUCHERIFY_RESERVE_CHECKOUT=55                 # checkout do 90-20 = 70; odczyty do 90-20-55 = 15
 LOYALTY_BALANCE_CACHE_SECONDS=10
 LOYALTY_BALANCE_STALE_SECONDS=600              # tylko do wyświetlenia przy awarii/limicie
-LOYALTY_NO_CARD_CACHE_SECONDS=10               # „brak karty” po wyszukaniu w GET /api/loyalty
-RATE_LIMIT_LOYALTY_CAPACITY=10                 # GET /api/loyalty per IP
-RATE_LIMIT_LOYALTY_PER_MINUTE=6
-RATE_LIMIT_POINTS_IP_CAPACITY=12               # checkout z punktami per IP
+LOYALTY_LOOKUP_UNKNOWN_CARDS=false             # true = GET szuka karty z panelu/kasy (1 odczyt)
+LOYALTY_NO_CARD_CACHE_SECONDS=10               # „brak karty” po wyszukaniu (tylko z LOOKUP=true)
+RATE_LIMIT_LOYALTY_CAPACITY=30                 # GET /api/loyalty per IP
+RATE_LIMIT_LOYALTY_PER_MINUTE=20
+RATE_LIMIT_POINTS_IP_CAPACITY=30               # checkout z punktami per IP
 RATE_LIMIT_POINTS_IP_PER_HOUR=6
 RATE_LIMIT_POINTS_EMAIL_CAPACITY=6             # checkout z punktami per e-mail
 RATE_LIMIT_POINTS_EMAIL_PER_HOUR=6

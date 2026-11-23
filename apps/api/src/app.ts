@@ -117,6 +117,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       cacheTtlMs: config.loyalty.balanceCacheTtlMs,
       staleTtlMs: config.loyalty.balanceStaleTtlMs,
       noCardTtlMs: config.loyalty.noCardCacheTtlMs,
+      lookupUnknownCards: config.loyalty.lookupUnknownCards,
     },
   );
 

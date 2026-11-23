@@ -59,7 +59,7 @@ async function pay(reservationId: string): Promise<void> {
 }
 
 describe("odczyt salda nie zakłada karty w Voucherify", () => {
-  it("nowy e-mail: 1000 punktów, jedno wyszukanie karty (odczyt), bez zakładania karty i wiersza w bazie", async () => {
+  it("nowy e-mail: 1000 punktów bez żadnego wywołania Voucherify, bez zakładania karty i wiersza w bazie", async () => {
     const provider = new CountingLoyaltyProvider();
     ctx = await createTestContext({ loyaltyProvider: provider });
 
@@ -70,12 +70,8 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
       expect(response.json<LoyaltyResponse>()).toEqual({ email, points: 1000 });
     }
 
-    // Powtórka tego samego adresu w ciągu LOYALTY_NO_CARD_CACHE_SECONDS nie pyta drugi raz.
-    expect(provider.calls.map((call) => [call.op, call.priority])).toEqual([
-      ["findMember", "read"],
-      ["findMember", "read"],
-      ["findMember", "read"],
-    ]);
+    // Domyślnie bez wyszukiwania karty (LOYALTY_LOOKUP_UNKNOWN_CARDS=false): zero wywołań.
+    expect(provider.calls).toEqual([]);
     expect(provider.count("createMember")).toBe(0);
     expect(accountRow(ctx, "jan@wp.pl")).toBeUndefined();
     expect(accountRow(ctx, "jan@wp.pl.com")).toBeUndefined();
@@ -489,5 +485,26 @@ describe("Resend Sandbox a punkty", () => {
     expect(ctx.services.jobs.retry(job.id)).toBe(true);
     expect(await ctx.services.worker.runOnce()).toBe(true);
     expect((await loyalty("obcy@example.com")).json<LoyaltyResponse>().points).toBe(1000 + 890);
+  });
+});
+
+describe("GET /api/loyalty — adresy testowe Resend z `+` (Etap III)", () => {
+  it("niezakodowany `+` (curl) i %2B dają ten sam adres; zakodowana spacja dalej 400", async () => {
+    ctx = await createTestContext();
+
+    const raw = await ctx.app.inject({ method: "GET", url: "/api/loyalty?email=Delivered+Jan@resend.dev" });
+    expect(raw.statusCode).toBe(200);
+    expect(raw.json<LoyaltyResponse>()).toEqual({ email: "delivered+jan@resend.dev", points: 1000 });
+
+    const encoded = await ctx.app.inject({ method: "GET", url: "/api/loyalty?email=delivered%2Bjan%40resend.dev" });
+    expect(encoded.statusCode).toBe(200);
+    expect(encoded.json<LoyaltyResponse>().email).toBe("delivered+jan@resend.dev");
+
+    const space = await ctx.app.inject({ method: "GET", url: "/api/loyalty?email=jan%20kowalski%40resend.dev" });
+    expect(space.statusCode).toBe(400);
+
+    const broken = await ctx.app.inject({ method: "GET", url: "/api/loyalty?email=%E0%A4%A" });
+    expect(broken.statusCode).toBe(400);
+    expect(broken.json()).toMatchObject({ error: "VALIDATION_ERROR" });
   });
 });

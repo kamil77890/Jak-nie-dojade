@@ -68,13 +68,14 @@ describe("konfiguracja wdrożenia", () => {
     expect(defaults.loyalty).toMatchObject({
       hourlyBudget: 90,
       reserveCritical: 20,
-      reserveCheckout: 25,
+      reserveCheckout: 55,
       balanceCacheTtlMs: 10_000,
       balanceStaleTtlMs: 600_000,
       noCardCacheTtlMs: 10_000,
+      lookupUnknownCards: false,
     });
-    expect(defaults.rateLimit.loyalty).toEqual({ capacity: 10, refillPerSecond: 0.1 });
-    expect(defaults.rateLimit.pointsCheckoutIp).toEqual({ capacity: 12, refillPerSecond: 6 / 3600 });
+    expect(defaults.rateLimit.loyalty).toEqual({ capacity: 30, refillPerSecond: 20 / 60 });
+    expect(defaults.rateLimit.pointsCheckoutIp).toEqual({ capacity: 30, refillPerSecond: 6 / 3600 });
     expect(defaults.rateLimit.pointsCheckoutEmail).toEqual({ capacity: 6, refillPerSecond: 6 / 3600 });
     expect(defaults.pointsSweep).toEqual({ enabled: true, intervalMs: 2_000, batchSize: 20 });
     expect(defaults.worker).toMatchObject({

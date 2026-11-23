@@ -147,11 +147,14 @@ describe("III.B3 — dwa równoległe checkouty na jednym saldzie", () => {
   });
 });
 
+/** Wyszukiwanie kart z panelu jest domyślnie wyłączone (oszczędza limit 100/h). */
+const LOOKUP = { loyalty: { lookupUnknownCards: true } };
+
 describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżość salda)", () => {
   it("karta założona w panelu z 3000 pkt: GET pokazuje 3000, checkout 2000 → 200, bez bonusu", async () => {
     const provider = new CountingLoyaltyProvider();
     provider.seedCard("kasa@example.com", 3000);
-    ctx = await createTestContext({ loyaltyProvider: provider });
+    ctx = await createTestContext({ loyaltyProvider: provider, overrides: LOOKUP });
 
     expect(await balance("kasa@example.com")).toBe(3000);
     expect(accountRow(ctx, "kasa@example.com")).toMatchObject({ member_id: "kasa@example.com", welcome_pending: 0 });
@@ -168,7 +171,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
   it("karta z panelu bez wcześniejszego GET: checkout ponad bonus szuka karty i używa jej salda", async () => {
     const provider = new CountingLoyaltyProvider();
     provider.seedCard("kasa@example.com", 3000);
-    ctx = await createTestContext({ loyaltyProvider: provider });
+    ctx = await createTestContext({ loyaltyProvider: provider, overrides: LOOKUP });
     const reservationId = await reserve("kasa@example.com", "5-1");
 
     expect((await checkout(reservationId, 2000)).statusCode).toBe(200);
@@ -179,7 +182,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
   it("karta z panelu z 200 pkt (bez GET): checkout 1000 → 409 bez żadnego zapisu, checkout 200 → sesja 8700", async () => {
     const provider = new CountingLoyaltyProvider();
     provider.seedCard("kasa@example.com", 200);
-    ctx = await createTestContext({ loyaltyProvider: provider });
+    ctx = await createTestContext({ loyaltyProvider: provider, overrides: LOOKUP });
     const reservationId = await reserve("kasa@example.com", "5-1");
 
     const refused = await checkout(reservationId, 1000);
@@ -195,7 +198,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
 
   it("nowy e-mail bez karty: checkout ponad bonus → 409 bez zakładania karty (brak karty pamiętany 10 s)", async () => {
     const provider = new CountingLoyaltyProvider();
-    ctx = await createTestContext({ loyaltyProvider: provider });
+    ctx = await createTestContext({ loyaltyProvider: provider, overrides: LOOKUP });
     const reservationId = await reserve("nowy@example.com", "5-1");
 
     expect(await balance("nowy@example.com")).toBe(1000);
@@ -207,7 +210,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
 
   it("karta założona w panelu po odczycie „brak karty” jest widoczna najpóźniej po 10 s", async () => {
     const provider = new CountingLoyaltyProvider();
-    ctx = await createTestContext({ loyaltyProvider: provider });
+    ctx = await createTestContext({ loyaltyProvider: provider, overrides: LOOKUP });
 
     expect(await balance("e2@example.com")).toBe(1000);
     provider.seedCard("e2@example.com", 3000);
@@ -221,7 +224,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
   it("korekta +500 w panelu jest widoczna najpóźniej po 10 s (domyślny cache salda)", async () => {
     const provider = new CountingLoyaltyProvider();
     provider.seedCard("anna@example.com", 1790);
-    ctx = await createTestContext({ loyaltyProvider: provider });
+    ctx = await createTestContext({ loyaltyProvider: provider, overrides: LOOKUP });
     expect(await balance("anna@example.com")).toBe(1790);
 
     provider.panelAdjust("anna@example.com", 500);
@@ -234,7 +237,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
   it("karta z panelu bez historii (0 pkt): GET pokazuje bonus 1000, pierwszy zapis go przyznaje raz", async () => {
     const provider = new CountingLoyaltyProvider();
     provider.seedCard("pusta@example.com", 0);
-    ctx = await createTestContext({ loyaltyProvider: provider });
+    ctx = await createTestContext({ loyaltyProvider: provider, overrides: LOOKUP });
 
     expect(await balance("pusta@example.com")).toBe(1000);
     expect(accountRow(ctx, "pusta@example.com")).toMatchObject({ welcome_pending: 1 });
@@ -247,7 +250,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
   it("przez HTTP (prawdziwy klient Voucherify): karta z panelu z 3000 → GET 3000 jednym wywołaniem, checkout 2000 → 200", async () => {
     const voucherify = stubVoucherify();
     voucherify.balances.set("CARD-kasa@example.com", 3000);
-    ctx = await createTestContext({ overrides: { loyalty: voucherifyConfig() } });
+    ctx = await createTestContext({ overrides: { loyalty: voucherifyConfig({ lookupUnknownCards: true }) } });
 
     expect(await balance("kasa@example.com")).toBe(3000);
     expect(voucherify.calls).toEqual([{ method: "GET", path: "/v1/loyalties/camp_test/members" }]);
@@ -259,7 +262,7 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
   it("wyszukanie karty przy wyczerpanym budżecie odczytów albo awarii: 1000 jak dla nowego klienta, bez 503", async () => {
     const voucherify = stubVoucherify();
     voucherify.state.down = true;
-    ctx = await createTestContext({ overrides: { loyalty: voucherifyConfig() } });
+    ctx = await createTestContext({ overrides: { loyalty: voucherifyConfig({ lookupUnknownCards: true }) } });
     const response = await loyalty("ktos@example.com");
     expect(response.statusCode).toBe(200);
     expect(response.json<LoyaltyResponse>().points).toBe(1000);
@@ -283,7 +286,10 @@ describe("limit checkoutów z punktami per IP i per e-mail (budżet Voucherify)"
 
   it("jedno IP: 12 checkoutów z punktami przechodzi (test wyścigu: 5 e-maili × 2), 13. → 429 z Retry-After; inne IP kupuje", async () => {
     const provider = new CountingLoyaltyProvider();
-    ctx = await createTestContext({ loyaltyProvider: provider, overrides: limits });
+    ctx = await createTestContext({
+      loyaltyProvider: provider,
+      overrides: { rateLimit: { ...limits.rateLimit, pointsCheckoutIp: { capacity: 12, refillPerSecond: 6 / 3600 } } },
+    });
 
     for (let index = 0; index < 12; index += 1) {
       const reservationId = await reserve(`klient${index}@example.com`, SEATS[index]!);
@@ -357,7 +363,6 @@ describe("koszt wywołań Voucherify na zakup (CONTRACT.md §11.6)", () => {
     expect(await ctx.services.worker.runOnce()).toBe(true);
 
     expect(provider.calls.map((call) => `${call.op}:${call.priority}`)).toEqual([
-      "findMember:read",
       "createMember:checkout",
       "adjustPoints:checkout",
       "adjustPoints:checkout",

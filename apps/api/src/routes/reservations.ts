@@ -78,7 +78,7 @@ export function registerReservationRoutes(
     "/api/loyalty",
     { preHandler: dependencies.loyaltyGuards },
     async (request): Promise<LoyaltyResponse> => {
-      const email = readLoyaltyEmail(request.query.email);
+      const email = readLoyaltyEmail(rawQueryParam(request.url, "email"));
       return { email, points: await dependencies.loyalty.readBalance(email) };
     },
   );
@@ -146,6 +146,35 @@ function readReservationId(raw: string | undefined): string {
   const reservationId = raw?.trim();
   if (!reservationId) throw new ValidationError("Brak identyfikatora rezerwacji.");
   return reservationId;
+}
+
+/**
+ * Parametr query odczytany z surowego URL-a. Standardowy parser zamienia `+` na spację,
+ * więc `?email=delivered+jan@resend.dev` (adresy testowe Resend w Etapie III, wysłane
+ * curl-em bez kodowania) stawało się „delivered jan@…” i dostawało 400. Tu `+` zostaje
+ * plusem, a zakodowana spacja (`%20`) dalej jest spacją — więc zły adres nadal daje 400.
+ * Powtórzony parametr → tablica (400 w walidacji), zły zapis %-kodowania → 400.
+ */
+function rawQueryParam(url: string, name: string): string | string[] | undefined {
+  const query = url.includes("?") ? url.slice(url.indexOf("?") + 1) : "";
+  const values: string[] = [];
+  for (const pair of query.split("&")) {
+    if (!pair) continue;
+    const separator = pair.indexOf("=");
+    const key = separator === -1 ? pair : pair.slice(0, separator);
+    if (decodeQueryPart(key) !== name) continue;
+    values.push(separator === -1 ? "" : decodeQueryPart(pair.slice(separator + 1)));
+  }
+  if (values.length === 0) return undefined;
+  return values.length === 1 ? values[0] : values;
+}
+
+function decodeQueryPart(part: string): string {
+  try {
+    return decodeURIComponent(part.replace(/\+/g, "%2B"));
+  } catch {
+    throw new ValidationError("Podaj poprawny adres e-mail.");
+  }
 }
 
 /**

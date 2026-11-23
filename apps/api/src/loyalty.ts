@@ -395,6 +395,14 @@ export interface LoyaltyServiceOptions {
   staleTtlMs?: number;
   /** Jak długo pamiętamy, że e-mail nie ma karty w Voucherify (0 = pytamy za każdym razem). */
   noCardTtlMs?: number;
+  /**
+   * Czy odczyt salda dla e-maila bez mapowania szuka karty w Voucherify (karta z panelu
+   * albo kasy). Domyślnie NIE: według zadania e-mail, który nic u nas nie kupił, ma 1000
+   * punktów, a każde wyszukanie kosztuje wywołanie z limitu 100/h — w teście z wieloma
+   * adresami delivered+…@resend.dev zjadało budżet checkoutów. Checkout i tak trafia
+   * w istniejącą kartę przy pierwszym zapisie (createMember → „karta istnieje”).
+   */
+  lookupUnknownCards?: boolean;
   /** Górna granica wpisów — cache nie może zjeść pamięci przy zalewie różnych e-maili. */
   maxCacheEntries?: number;
 }
@@ -444,6 +452,7 @@ export class LoyaltyService {
   private readonly cacheTtlMs: number;
   private readonly staleTtlMs: number;
   private readonly noCardTtlMs: number;
+  private readonly lookupUnknownCards: boolean;
   private readonly maxCacheEntries: number;
   private seq = 0;
   private hits = 0;
@@ -460,6 +469,7 @@ export class LoyaltyService {
     this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 0);
     this.staleTtlMs = Math.max(this.cacheTtlMs, options.staleTtlMs ?? 0);
     this.noCardTtlMs = Math.max(0, options.noCardTtlMs ?? 0);
+    this.lookupUnknownCards = options.lookupUnknownCards ?? false;
     this.maxCacheEntries = Math.max(1, options.maxCacheEntries ?? 10_000);
   }
 
@@ -472,7 +482,8 @@ export class LoyaltyService {
    * Voucherify jest niedostępny albo budżet się skończył, oddaje niedawny odczyt
    * z cache (do `staleTtlMs`), a bez niego rzuca 503 LOYALTY_UNAVAILABLE.
    *
-   * E-mail bez mapowania: jedno wyszukanie karty w Voucherify. Jest karta (panel, kasa,
+   * E-mail bez mapowania (tylko z `lookupUnknownCards`, domyślnie wyłączone — bez tego
+   * od razu bonus powitalny, zero wywołań): jedno wyszukanie karty w Voucherify. Jest karta (panel, kasa,
    * zgubione mapowanie) → zapisujemy mapowanie i pokazujemy jej saldo. Nie ma → bonus
    * powitalny. Brak budżetu odczytów albo awaria → też bonus powitalny, bez 503: tak
    * odpowiadaliśmy zawsze nowemu klientowi, a checkout i tak sprawdza prawdziwą kartę
@@ -480,7 +491,10 @@ export class LoyaltyService {
    */
   async readBalance(email: string): Promise<number> {
     const normalized = normalizeEmail(email);
-    if (!this.findAccount(normalized) && !(await this.adoptForRead(normalized))) {
+    if (
+      !this.findAccount(normalized) &&
+      !(this.lookupUnknownCards && (await this.adoptForRead(normalized)))
+    ) {
       return this.welcomePoints;
     }
     return this.balanceFor(normalized);

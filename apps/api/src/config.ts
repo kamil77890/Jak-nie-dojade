@@ -82,6 +82,7 @@ export interface AppConfig {
      * salda. Krótko (≤ 15 s), żeby karta założona w panelu była widoczna w 15 s.
      */
     noCardCacheTtlMs: number;
+    lookupUnknownCards: boolean;
   };
   /**
    * Zwrot punktów porzuconych sesji (III.B4): co `intervalMs` sesje z punktami, których
@@ -243,16 +244,19 @@ export function loadConfig(env: Env = process.env): AppConfig {
         breakerFailureThreshold: readInt(env, "VOUCHERIFY_BREAKER_FAILURE_THRESHOLD", 5, 1),
         breakerResetMs: readInt(env, "VOUCHERIFY_BREAKER_RESET_MS", 30_000, 100),
         hourlyBudget: readInt(env, "VOUCHERIFY_HOURLY_BUDGET", 90, 1),
-        // Podział 90: odczyty do 45, checkout do 70 (co najmniej 25 tylko dla niego),
-        // zwroty i naliczenia do 90 (co najmniej 20 tylko dla nich). Odczyty dostają 45,
-        // bo od Etapu III.A2 każdy nowy e-mail i każda zmiana w panelu to odczyt (cache 10 s);
-        // przy 30 test czarnej skrzynki wyczerpywał je w kilka minut. CONTRACT.md §11.6.1.
+        // Podział 90: odczyty do 15, checkout do 70 (co najmniej 55 tylko dla niego),
+        // zwroty i naliczenia do 90 (co najmniej 20 tylko dla nich). Odczyty salda nowych
+        // e-maili nie wołają Voucherify (lookupUnknownCards), więc mała pula wystarcza;
+        // symulacja pełnego testu prowadzącego mieściła się w 58–73 wywołaniach bez odmów
+        // dopiero przy rezerwie checkoutu 55. CONTRACT.md §11.6.1.
         reserveCritical: readInt(env, "VOUCHERIFY_RESERVE_CRITICAL", 20, 0),
-        reserveCheckout: readInt(env, "VOUCHERIFY_RESERVE_CHECKOUT", 25, 0),
+        reserveCheckout: readInt(env, "VOUCHERIFY_RESERVE_CHECKOUT", 55, 0),
         // 10 s: zmiana salda w panelu Voucherify jest widoczna w sklepie najpóźniej po 10 s.
         balanceCacheTtlMs: readInt(env, "LOYALTY_BALANCE_CACHE_SECONDS", 10, 0) * 1000,
         balanceStaleTtlMs: readInt(env, "LOYALTY_BALANCE_STALE_SECONDS", 600, 0) * 1000,
         noCardCacheTtlMs: readInt(env, "LOYALTY_NO_CARD_CACHE_SECONDS", 10, 0) * 1000,
+        // Domyślnie wyłączone: nowy e-mail = 1000 pkt bez wywołania (oszczędza limit 100/h).
+        lookupUnknownCards: readBool(env, "LOYALTY_LOOKUP_UNKNOWN_CARDS", false),
       };
     })(),
     pointsSweep: {
@@ -296,12 +300,13 @@ export function loadConfig(env: Env = process.env): AppConfig {
         refillPerSecond: readInt(env, "RATE_LIMIT_RESERVATION_REFILL_PER_SECOND", 4, 0),
       },
       purchase: { capacity: 40, refillPerSecond: 2 },
-      // Saldo punktów: 10 odczytów na start i 6 na minutę per IP. Klient pyta o saldo
-      // raz po wpisaniu e-maila (UI pamięta wynik), więc to duży zapas dla ludzi,
-      // a skrypt nie wyczerpie godzinowego limitu Voucherify.
+      // Saldo punktów: 30 odczytów na start i 20 na minutę per IP. Prowadzący testuje
+      // z jednego laptopa (UI + curl), a przy 429 pole „Użyj punktów” znika — 10/6
+      // blokowało zwykłe sprawdzanie co sekundę. Zalew 200/min (III.A3) dalej dostaje
+      // ok. 150×429, a budżet Voucherify chronią pula odczytów i cache.
       loyalty: {
-        capacity: readInt(env, "RATE_LIMIT_LOYALTY_CAPACITY", 10, 1),
-        refillPerSecond: readInt(env, "RATE_LIMIT_LOYALTY_PER_MINUTE", 6, 0) / 60,
+        capacity: readInt(env, "RATE_LIMIT_LOYALTY_CAPACITY", 30, 1),
+        refillPerSecond: readInt(env, "RATE_LIMIT_LOYALTY_PER_MINUTE", 20, 0) / 60,
       },
       // Checkout z punktami: per IP 12 na start i 6/h, per e-mail 6 na start i 6/h.
       // Liczą się tylko żądania, które doszły do Voucherify (nie walidacja, 404/409 ani
@@ -309,7 +314,8 @@ export function loadConfig(env: Env = process.env): AppConfig {
       // (5 e-maili × 2 checkouty) z zapasem; jedno IP zużyje najwyżej ok. 36 wywołań
       // naraz i 18/h dalej — reszta budżetu checkoutu zostaje innym (CONTRACT.md §11.6).
       pointsCheckoutIp: {
-        capacity: readInt(env, "RATE_LIMIT_POINTS_IP_CAPACITY", 12, 1),
+        // 30: cały test prowadzącego z jednego IP (punkty także w kryteriach I–II).
+        capacity: readInt(env, "RATE_LIMIT_POINTS_IP_CAPACITY", 30, 1),
         refillPerSecond: readInt(env, "RATE_LIMIT_POINTS_IP_PER_HOUR", 6, 0) / 3600,
       },
       pointsCheckoutEmail: {
