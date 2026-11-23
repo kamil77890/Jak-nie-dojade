@@ -230,7 +230,7 @@ Testy płatności (`apps/api/test/payments.test.ts`) używają atrapy Stripe'a z
 
 `apps/api/test/loyalty.test.ts` sprawdza bonus powitalny, płatność punktami (kwota sesji i saldo), limity połowy ceny i salda, zwrot punktów po wygasłej sesji, treść maila z podsumowaniem oraz `503` przy awarii Voucherify. Testy korzystają z pamięciowego dostawcy punktów, więc nie wychodzą do sieci.
 
-Testy web (`apps/web/test`) działają w jsdom. `reservation.test.tsx` sprawdza formularz B (etykieta, walidacja, `409`), licznik (od `expiresAt`, po odświeżeniu, wygaśnięcie, powrót po zakupie) i przycisk C. `e2e.test.tsx` przechodzi ekrany A → B → C na prawdziwym API (Fastify + SQLite w pamięci przez `inject`) przy TTL = 2 min, ze wspólnym zegarem przeglądarki i API: happy path z płatnością (Checkout → podpisany webhook → strona powrotu → bilet), wygaśnięcie i `409` przy płatności.
+Testy web (`apps/web/test`) działają w jsdom. `reservation.test.tsx` sprawdza formularz B (etykieta, walidacja, `409`), kwotę „Do zapłaty” w podsumowaniu kursu po wpisaniu punktów i po „Użyj maksimum” (z jednym regionem `aria-live`), licznik (od `expiresAt`, po odświeżeniu, wygaśnięcie, powrót po zakupie) i przycisk C. `e2e.test.tsx` przechodzi ekrany A → B → C na prawdziwym API (Fastify + SQLite w pamięci przez `inject`) przy TTL = 2 min, ze wspólnym zegarem przeglądarki i API: happy path z płatnością (Checkout → podpisany webhook → strona powrotu → bilet), wygaśnięcie i `409` przy płatności.
 
 ## Konfiguracja
 

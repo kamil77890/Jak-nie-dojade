@@ -274,6 +274,56 @@ describe("karta A — przycisk „Zapłać” na ekranie rezerwacji", () => {
     expect(JSON.parse(String(checkoutCall?.[1]?.body))).toEqual({ points: 1000 });
   });
 
+  it("„Do zapłaty” w podsumowaniu kursu uwzględnia punkty: po wpisaniu i po „Użyj maksimum”", async () => {
+    freezeDate(NOW);
+    stubApi((_method, path) =>
+      path === "/api/loyalty" ? json(200, { email: "anna@example.com", points: 1000 }) : json(404, {}),
+    );
+    saveReservation(view());
+    renderAt("/reservations/res-1");
+
+    /** Wiersze podsumowania kursu (dt → dd); nagłówek panelu „Do zapłaty” to h2, nie dt. */
+    const summary = () =>
+      Object.fromEntries(
+        [...document.querySelectorAll("dt")].map((dt) => [dt.textContent, dt.nextElementSibling?.textContent ?? ""]),
+      );
+    const status = () => screen.getByRole("status");
+
+    const input = await screen.findByRole("spinbutton", { name: /użyj punktów/i });
+    expect(summary()["Do zapłaty"]).toMatch(/^89\s*zł$/);
+    expect(summary()["Punktami"]).toBeUndefined();
+    // Bez zmian nic nie jest ogłaszane.
+    expect(status().textContent).toBe("");
+
+    fireEvent.change(input, { target: { value: "250" } });
+    expect(summary()["Do zapłaty"]).toMatch(/^86,50\s*zł$/);
+    expect(summary()["Cena biletu"]).toMatch(/^89\s*zł$/);
+    expect(summary()["Punktami"]).toMatch(/^−\s*2,50\s*zł \(250 pkt\)$/);
+    expect(payButton()?.textContent).toContain("Zapłać 86,50 zł");
+    // Region aria-live czeka, aż klient przestanie pisać — nie ogłasza każdego znaku.
+    expect(status().textContent).toBe("");
+    await waitFor(() => expect(status().textContent).toMatch(/^Do zapłaty 86,50\s*zł: cena biletu 89\s*zł/), {
+      timeout: 2000,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Użyj maksimum" }));
+    expect(summary()["Do zapłaty"]).toMatch(/^79\s*zł$/);
+    expect(summary()["Punktami"]).toMatch(/^−\s*10\s*zł \(1000 pkt\)$/);
+    expect(payButton()?.textContent).toContain("Zapłać 79 zł");
+    await waitFor(() => expect(status().textContent).toMatch(/^Do zapłaty 79\s*zł/), { timeout: 2000 });
+
+    // Za dużo punktów: przycięte do limitu tak samo jak przycisk.
+    fireEvent.change(input, { target: { value: "5000" } });
+    expect(summary()["Do zapłaty"]).toMatch(/^79\s*zł$/);
+
+    fireEvent.change(input, { target: { value: "0" } });
+    expect(summary()["Do zapłaty"]).toMatch(/^89\s*zł$/);
+    expect(summary()["Punktami"]).toBeUndefined();
+    await waitFor(() => expect(status().textContent).toMatch(/^Do zapłaty 89\s*zł, bez punktów\.$/), {
+      timeout: 2000,
+    });
+  });
+
   it("409 RESERVATION_EXPIRED: cały ekran przechodzi w wygaśnięcie, choć licznik jeszcze trwał", async () => {
     freezeDate(NOW);
     stubApi((method, path) =>
