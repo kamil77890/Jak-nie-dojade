@@ -8,12 +8,19 @@ export function TripSummary({
   seatId,
   passenger,
   price,
+  pointsUsed = 0,
 }: {
   event: EventSummary;
   seatId: string;
   passenger?: string;
   /** Kwota w groszach i jej etykieta, np. ["Cena", 8900] albo ["Do zapłaty", 8900]. */
   price?: [string, number];
+  /**
+   * Punkty wybrane do zapłaty (1 pkt = 1 grosz). Gdy > 0, kwota z `price` jest
+   * pomniejszona, a nad nią stoi rozbicie: cena biletu i część zapłacona punktami —
+   * te same liczby co w bloku punktów i na przycisku „Zapłać”.
+   */
+  pointsUsed?: number;
 }) {
   const { from, to } = splitRelation(event.relation);
   const position = getSeat(event.id, seatId)?.position;
@@ -24,7 +31,13 @@ export function TripSummary({
   ];
   if (position) rows.push(["Miejsce", position === "window" ? "przy oknie" : "przy korytarzu"]);
   if (passenger) rows.push(["Podróżny", passenger]);
-  if (price) rows.push([price[0], formatPrice(price[1])]);
+  if (price && pointsUsed > 0) {
+    rows.push(["Cena biletu", formatPrice(price[1])]);
+    rows.push(["Punktami", `− ${formatPrice(pointsUsed)} (${pointsUsed.toLocaleString("pl-PL")} pkt)`]);
+    rows.push([price[0], formatPrice(Math.max(0, price[1] - pointsUsed))]);
+  } else if (price) {
+    rows.push([price[0], formatPrice(price[1])]);
+  }
 
   return (
     <dl className="text-[16px]">

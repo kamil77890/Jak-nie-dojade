@@ -91,6 +91,17 @@ export class TicketMailWorker {
       // Gdyby proces padł między wysyłką a zapisem znacznika, Resend i tak zdeduplikuje
       // powtórkę po Idempotency-Key = job.id.
       const mailSent = job.input.mailSentAt !== undefined;
+
+      // Punkty najpierw (III.A2: saldo z punktami za zakup najpóźniej 15 s po zapłacie) —
+      // wolny albo niedostępny Resend (timeouty, retry) nie może opóźniać naliczenia.
+      // Błąd punktów nie blokuje maila: zapamiętujemy go i zgłaszamy po wysyłce.
+      let pointsError: unknown = null;
+      try {
+        await this.awardPoints(job);
+      } catch (error) {
+        pointsError = error;
+      }
+
       let mailError: unknown = null;
       if (!mailSent) {
         const message = this.compose(job);
@@ -114,11 +125,10 @@ export class TicketMailWorker {
         }
       }
 
-      // Punkty naliczamy niezależnie od poczty: nawet trwały błąd adresu nie może
-      // odebrać klientowi punktów. Gdy Voucherify padnie, job wróci z backoffem.
-      await this.awardPoints(job);
-
-      // Błąd maila zgłaszamy po naliczeniu punktów — kolejka zdecyduje o retry/DLQ.
+      // Punkty mają pierwszeństwo: gdy Voucherify padł, job wraca z odroczeniem (bez
+      // zużywania prób), a mail — już wysłany i oznaczony — nie pójdzie drugi raz.
+      // Trwały błąd adresu (bounced, 403 Sandboxa) nigdy nie odbiera klientowi punktów.
+      if (pointsError) throw pointsError;
       if (mailError) throw mailError;
 
       queue.ack(job.id);

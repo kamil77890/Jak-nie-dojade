@@ -43,6 +43,35 @@ interface SessionRow {
 
 const CODE_ALPHABET ="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
+/** `created: false` — powtórka identycznego requestu dostała istniejącą rezerwację. */
+export interface CreateReservationResult {
+  reservation: Reservation;
+  created: boolean;
+}
+
+/** E-mail do porównania: bez spacji na brzegach, małymi literami (tak też go zapisujemy). */
+export function normalizeEmail(email: string): string {
+  return email.trim().toLowerCase();
+}
+
+/** Imię do porównania: bez spacji na brzegach, ciągi białych znaków zwinięte do jednej spacji, NFC. */
+export function normalizeName(name: string): string {
+  return name.normalize("NFC").trim().replace(/\s+/g, " ");
+}
+
+/**
+ * „Ten sam klient” przy powtórce rezerwacji: zgodne OBA pola po normalizacji.
+ * Sam e-mail nie wystarcza — prowadzący wysyła identyczny request, a ścisła zgodność
+ * utrudnia przejęcie cudzej rezerwacji (i jej `reservationId`) po samym adresie.
+ * Wielkość liter w imieniu ma znaczenie: „jan” i „Jan” to dwa różne requesty.
+ */
+function sameCustomer(row: ReservationRow, input: CreateReservationInput): boolean {
+  return (
+    normalizeEmail(row.email) === normalizeEmail(input.email) &&
+    normalizeName(row.customer_name) === normalizeName(input.customerName)
+  );
+}
+
 export interface PurchaseResult {
   code: string;
   reservation: Reservation;
@@ -101,10 +130,23 @@ export class BookingService {
   ) {}
 
   /**
-   * Każde drugie zajęcie miejsca z ważną rezerwacją albo kupionego daje 409 —
-   * także powtórka identycznego requestu (karta B: „drugie zajęcie … daje 409”).
+   * Rezerwacja miejsca, idempotentna względem identycznego requestu (kryterium B1).
+   *
+   * - Miejsce wolne → nowa rezerwacja (`created: true`).
+   * - Miejsce trzyma WAŻNA, nieopłacona rezerwacja tego samego klienta — ten sam
+   *   `eventId`, `seatId`, e-mail i imię po normalizacji (`sameCustomer`) → zwracamy
+   *   tę samą rezerwację bez zmian: ten sam `id`, `expiresAt` (TTL się nie przedłuża)
+   *   i `amount` (`created: false`).
+   * - Każdy inny przypadek zajętego miejsca → 409: inny klient, ten sam e-mail
+   *   z innym imieniem, a także opłacona rezerwacja tego samego klienta (bilet
+   *   już jest — druga rezerwacja tego miejsca byłaby fałszywą obietnicą).
+   *
+   * Wygasła rezerwacja nie jest „tą samą”: `expireStale` gasi ją na początku
+   * transakcji, więc powtórka po TTL tworzy nową, jeśli miejsce jest wolne.
+   * Sprawdzenie i insert są w jednej transakcji `BEGIN IMMEDIATE`, więc równoległe
+   * identyczne requesty widzą się nawzajem: pierwszy tworzy, reszta dostaje tę samą.
    */
-  createReservation(input: CreateReservationInput): Reservation {
+  createReservation(input: CreateReservationInput): CreateReservationResult {
     const event = this.catalog.getEvent(input.eventId);
     if (!event || !this.catalog.getSeat(input.eventId, input.seatId)) {
       throw new EventOrSeatNotFoundError();
@@ -120,15 +162,22 @@ export class BookingService {
     return transaction(this.db, () => {
       this.expireStale(createdAt);
 
-      const taken = this.db
+      const holder = this.db
         .prepare(
-          `SELECT 1 FROM reservations
+          `SELECT * FROM reservations
            WHERE event_id = ? AND seat_id = ? AND status IN ('active', 'purchased')
            LIMIT 1`,
         )
-        .get(input.eventId, input.seatId);
+        .get(input.eventId, input.seatId) as unknown as ReservationRow | undefined;
 
-      if (taken) throw new SeatUnavailableError();
+      if (holder) {
+        // Powtórka identycznego requestu (podwójne kliknięcie, ponowienie po zerwanym
+        // połączeniu, curl 2×) dostaje tę samą rezerwację zamiast 409.
+        if (holder.status === "active" && sameCustomer(holder, input)) {
+          return { reservation: this.mapRow(holder), created: false };
+        }
+        throw new SeatUnavailableError();
+      }
 
       try {
         this.db
@@ -154,15 +203,18 @@ export class BookingService {
       }
 
       return {
-        id,
-        eventId: input.eventId,
-        seatId: input.seatId,
-        customerName: input.customerName,
-        email: input.email,
-        createdAt,
-        expiresAt,
-        status: "active",
-        amount,
+        reservation: {
+          id,
+          eventId: input.eventId,
+          seatId: input.seatId,
+          customerName: input.customerName,
+          email: input.email,
+          createdAt,
+          expiresAt,
+          status: "active",
+          amount,
+        },
+        created: true,
       };
     });
   }

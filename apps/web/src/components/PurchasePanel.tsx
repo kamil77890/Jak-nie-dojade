@@ -1,5 +1,5 @@
 import { formatPrice, type ReservationView } from "@pas/shared";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
 import { ApiRequestError, startCheckout } from "../lib/api";
 import { describeApiError, RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
@@ -13,12 +13,22 @@ export const redirectTo = {
   assign: (url: string) => window.location.assign(url),
 };
 
+const ANNOUNCE_DELAY_MS = 700;
+
+/** Tekst dla czytnika ekranu: kwota do zapłaty i — jeśli są punkty — rozbicie. */
+function amountAnnouncement(amount: number, points: number): string {
+  const payable = formatPrice(Math.max(0, amount - points));
+  if (points <= 0) return `Do zapłaty ${payable}, bez punktów.`;
+  return `Do zapłaty ${payable}: cena biletu ${formatPrice(amount)}, punktami ${formatPrice(points)} (${pointsLabel(points)}).`;
+}
+
 export function PurchasePanel({
   reservation,
   expired,
   cancelled = false,
   onPaid,
   onExpired,
+  onPointsChange,
 }: {
   reservation: ReservationView;
   expired: boolean;
@@ -28,6 +38,8 @@ export function PurchasePanel({
   onPaid: () => void;
   /** Serwer odrzucił płatność jako wygasłą, choć licznik w przeglądarce jeszcze trwa. */
   onExpired?: () => void;
+  /** Wybrane punkty (już przycięte do limitu) — strona pokazuje je w podsumowaniu kursu. */
+  onPointsChange?: (points: number) => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [forcedExpired, setForcedExpired] = useState(false);
@@ -56,6 +68,24 @@ export function PurchasePanel({
   const points = Number.isFinite(parsedPoints) ? Math.max(0, Math.min(parsedPoints, maxPoints)) : 0;
   const payable = Math.max(0, reservation.amount - points);
   const price = formatPrice(payable);
+
+  // Podsumowanie kursu na stronie pokazuje tę samą kwotę „Do zapłaty” co nagłówek i przycisk.
+  useEffect(() => {
+    onPointsChange?.(points);
+  }, [points, onPointsChange]);
+
+  // Jeden region aria-live dla kwoty: ogłaszamy ją dopiero, gdy klient przestanie pisać
+  // (pauza 700 ms), a nie przy każdym znaku. Pierwsze wyświetlenie strony nic nie ogłasza.
+  const [announcedPoints, setAnnouncedPoints] = useState<number | null>(null);
+  const firstPoints = useRef(true);
+  useEffect(() => {
+    if (firstPoints.current) {
+      firstPoints.current = false;
+      return;
+    }
+    const timer = window.setTimeout(() => setAnnouncedPoints(points), ANNOUNCE_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [points]);
 
   function updatePoints(raw: string) {
     setPointsRaw(raw);
@@ -179,8 +209,8 @@ export function PurchasePanel({
             </strong>{" "}
             — punktami zapłacisz najwyżej połowę ceny biletu. 100 punktów = 1 zł.
           </p>
-          {/* Wyliczenie zmienia się przy wpisywaniu — region jest stały, treść ogłaszana grzecznie. */}
-          <div aria-live="polite" className="empty:hidden">
+          {/* Wyliczenie zmienia się przy wpisywaniu; czytnik dostaje je z jednego regionu niżej. */}
+          <div className="empty:hidden">
             {points > 0 ? (
               <dl className="points-receipt" aria-label="Wyliczenie płatności">
                 <div>
@@ -200,6 +230,10 @@ export function PurchasePanel({
           </div>
         </div>
       ) : null}
+
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {announcedPoints === null ? "" : amountAnnouncement(reservation.amount, announcedPoints)}
+      </p>
 
       <button
         type="button"

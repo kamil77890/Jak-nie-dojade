@@ -45,12 +45,13 @@ describe("test chaosu — limit rezerwacji przy szybkim przebiegu z jednego IP",
       expect([400, 404]).toContain(response.statusCode);
     }
 
-    // B1: identyczny POST 2× po kolei i 2× równolegle.
+    // B1: identyczny POST 2× po kolei i 2× równolegle → ta sama rezerwacja (201, potem 200).
     const b1 = reservationPayload({ seatId: "5-1" });
-    statuses.push((await reserve(ctx, b1)).statusCode, (await reserve(ctx, b1)).statusCode);
-    const parallelB1 = await Promise.all([reserve(ctx, b1), reserve(ctx, b1)]);
-    statuses.push(...parallelB1.map((response) => response.statusCode));
-    expect(statuses).toEqual([201, 409, 409, 409]);
+    const b1Responses = [await reserve(ctx, b1), await reserve(ctx, b1)];
+    b1Responses.push(...(await Promise.all([reserve(ctx, b1), reserve(ctx, b1)])));
+    statuses.push(...b1Responses.map((response) => response.statusCode));
+    expect(statuses).toEqual([201, 200, 200, 200]);
+    expect(new Set(b1Responses.map((response) => response.json().reservationId)).size).toBe(1);
 
     // B2: 20 równoczesnych rezerwacji jednego miejsca — dokładnie jedna 2xx.
     const b2 = await Promise.all(
@@ -112,6 +113,32 @@ describe("test chaosu — B5: zalew rezerwacji od jednego klienta", () => {
     expect((await reserve(ctx, other)).statusCode).toBe(409);
     expect((await reserve(ctx, other)).statusCode).toBe(409);
     expect((await reserve(ctx, other)).statusCode).toBe(429);
+  });
+
+  it("powtórka identycznego requestu (200) zużywa żeton — nie obchodzi limitu B5", async () => {
+    ctx = await createTestContext({
+      overrides: {
+        rateLimit: {
+          enabled: true,
+          global: { capacity: 1_000, refillPerSecond: 0 },
+          reservation: { capacity: 3, refillPerSecond: 0 },
+          purchase: { capacity: 10, refillPerSecond: 0 },
+        },
+      },
+    });
+
+    const same = reservationPayload();
+    expect((await reserve(ctx, same)).statusCode).toBe(201);
+    expect((await reserve(ctx, same)).statusCode).toBe(200);
+    expect((await reserve(ctx, same)).statusCode).toBe(200);
+    const limited = await reserve(ctx, same);
+    expect(limited.statusCode).toBe(429);
+    expect(Number(limited.headers["retry-after"])).toBeGreaterThanOrEqual(1);
+    expect(limited.json()).toMatchObject({ error: "RATE_LIMITED", message: expect.any(String) });
+
+    // Inny klient (inne IP) ma własny kubełek.
+    const other = await reserve(ctx, reservationPayload({ seatId: "5-2", email: "inny@example.com" }), "203.0.113.9");
+    expect(other.statusCode).toBe(201);
   });
 
   it("400 oddaje żeton, więc złe requesty nie blokują poprawnej rezerwacji", async () => {

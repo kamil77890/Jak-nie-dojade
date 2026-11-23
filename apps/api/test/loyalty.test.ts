@@ -5,11 +5,13 @@ import type {
   ReservationStatusResponse,
 } from "@pas/shared";
 import {
+  FakeMailer,
   checkoutCompletedEvent,
   createTestContext,
   newIdempotencyKey,
   reservationPayload,
   sendWebhook,
+  transientMailError,
   type TestContext,
 } from "./helpers";
 import { LoyaltyProviderError, type LoyaltyProvider } from "../src/loyalty";
@@ -247,5 +249,42 @@ describe("karta C — mail z podsumowaniem punktów", () => {
     const text = ctx.mailer.calls[0]?.message.text ?? "";
     expect(text).toContain("Zapłacono punktami: 0 pkt (0,00 zł)");
     expect(text).toContain("Punkty za ten zakup: 890 pkt");
+  });
+});
+
+describe("III.A2 — punkty za zakup nie czekają na mail", () => {
+  it("punkty są na koncie przed wysyłką maila, a awaria Resend ich nie blokuje", async () => {
+    const balancesAtSend: number[] = [];
+    class ObservingMailer extends FakeMailer {
+      override async send(...args: Parameters<FakeMailer["send"]>) {
+        balancesAtSend.push((await loyalty("anna@example.com")).json<LoyaltyResponse>().points);
+        return super.send(...args);
+      }
+    }
+    const mailer = new ObservingMailer();
+    mailer.failWith = transientMailError();
+    ctx = await createTestContext({ mailer });
+    const reservationId = await reserve();
+
+    expect((await checkout(reservationId, 1000)).statusCode).toBe(200);
+    const session = ctx.payments.sessions.at(-1)!;
+    const webhook = await sendWebhook(
+      ctx,
+      checkoutCompletedEvent(ctx, { sessionId: session.result.id, reservationId, amount: session.input.amount }),
+    );
+    expect(webhook.statusCode).toBe(200);
+
+    // Resend nie działa: mail się nie udał, ale 790 punktów już jest na koncie.
+    expect(await ctx.services.worker.runOnce()).toBe(true);
+    expect(balancesAtSend.length).toBeGreaterThan(0);
+    expect(balancesAtSend.every((points) => points === 790)).toBe(true);
+    expect((await loyalty("anna@example.com")).json<LoyaltyResponse>().points).toBe(790);
+
+    // Resend wstał: ponowienie joba wysyła mail, a punktów nie dolicza drugi raz.
+    mailer.failWith = null;
+    ctx.advance(60_000);
+    expect(await ctx.services.worker.runOnce()).toBe(true);
+    expect((await loyalty("anna@example.com")).json<LoyaltyResponse>().points).toBe(790);
+    expect(ctx.services.worker.snapshot().processed).toBe(1);
   });
 });

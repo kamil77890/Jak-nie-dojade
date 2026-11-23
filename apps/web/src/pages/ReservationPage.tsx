@@ -35,6 +35,8 @@ export function ReservationPage({ cancelled = false }: { cancelled?: boolean }) 
   const [ticket] = useState(() => loadTicket(reservationId));
   // 409 z serwera ma pierwszeństwo przed licznikiem w przeglądarce.
   const [serverExpired, setServerExpired] = useState(false);
+  // Punkty wybrane w PurchasePanel — „Do zapłaty” w podsumowaniu kursu musi się zgadzać z przyciskiem.
+  const [pointsUsed, setPointsUsed] = useState(0);
 
   const paymentPath = `/reservations/${reservationId}/payment/success`;
 
@@ -174,6 +176,7 @@ export function ReservationPage({ cancelled = false }: { cancelled?: boolean }) 
             cancelled={cancelled}
             onPaid={() => navigate(paymentPath)}
             onExpired={() => setServerExpired(true)}
+            onPointsChange={setPointsUsed}
           />
           <div>
             <TripSummary
@@ -181,6 +184,7 @@ export function ReservationPage({ cancelled = false }: { cancelled?: boolean }) 
               seatId={reservation.seatId}
               passenger={reservation.customerName}
               price={["Do zapłaty", reservation.amount]}
+              pointsUsed={expired ? 0 : pointsUsed}
             />
             <dl className="grid grid-cols-[120px_minmax(0,1fr)] gap-4 border-t border-line py-3 text-[16px]">
               <dt className="text-muted">Rezerwacja</dt>
