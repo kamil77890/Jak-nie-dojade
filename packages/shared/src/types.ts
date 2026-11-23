@@ -152,7 +152,10 @@ export type ApiErrorCode =
   | "INTERNAL_ERROR";
 
 export interface ApiError {
+  /** Stały kod do obsługi w programie (np. `INSUFFICIENT_POINTS`). */
   error: ApiErrorCode | string;
+  /** Komunikat po polsku dla człowieka; nigdy nie zawiera szczegółów technicznych. */
+  message: string;
   retryAfter?: number;
 }
 

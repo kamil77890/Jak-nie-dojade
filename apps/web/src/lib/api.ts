@@ -20,6 +20,8 @@ export class ApiRequestError extends Error {
     public readonly status: number,
     public readonly code: string,
     public readonly retryAfter?: number,
+    /** Komunikat odmowy z API (po polsku); front używa go, gdy nie ma własnego tekstu. */
+    public readonly serverMessage?: string,
   ) {
     super(`${status} ${code}`);
     this.name = "ApiRequestError";
@@ -51,7 +53,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    const errorBody = body as { error?: string; retryAfter?: number } | null;
+    const errorBody = body as { error?: string; message?: string; retryAfter?: number } | null;
     const headerRetryAfter = Number(response.headers.get("retry-after"));
     const retryAfter =
       errorBody?.retryAfter ??
@@ -60,6 +62,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       response.status,
       errorBody?.error ?? "INTERNAL_ERROR",
       retryAfter,
+      typeof errorBody?.message === "string" && errorBody.message.trim() ? errorBody.message : undefined,
     );
   }
 

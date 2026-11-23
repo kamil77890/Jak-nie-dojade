@@ -110,7 +110,7 @@ Retry-After: 60
 ```
 
 ```json
-{ "error": "RATE_LIMITED", "retryAfter": 60 }
+{ "error": "RATE_LIMITED", "message": "Zbyt wiele żądań. Spróbuj chwilę później.", "retryAfter": 60 }
 ```
 
 Dodatkowo odpowiedź niesie `ratelimit-limit`, `ratelimit-remaining`, `ratelimit-reset`.

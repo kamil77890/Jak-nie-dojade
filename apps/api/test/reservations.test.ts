@@ -43,7 +43,7 @@ describe("karta B — rezerwacja", () => {
       reservationPayload({ customerName: "Jan Nowak", email: "jan@example.com" }),
     );
     expect(duplicate.statusCode).toBe(409);
-    expect(duplicate.json()).toEqual({ error: "SEAT_UNAVAILABLE" });
+    expect(duplicate.json()).toEqual({ error: "SEAT_UNAVAILABLE", message: expect.any(String) });
   });
 
   it("powtórka identycznej rezerwacji też daje 409, a pierwsza rezerwacja zostaje", async () => {
@@ -54,7 +54,7 @@ describe("karta B — rezerwacja", () => {
     expect(first.statusCode).toBe(201);
     expect(second.statusCode).toBe(409);
     expect(third.statusCode).toBe(409);
-    expect(second.json()).toEqual({ error: "SEAT_UNAVAILABLE" });
+    expect(second.json()).toEqual({ error: "SEAT_UNAVAILABLE", message: expect.any(String) });
 
     const detail = await ctx.app.inject({ method: "GET", url: "/api/events/ic-7310-2026-11-21" });
     expect(detail.json<EventDetailResponse>().takenSeats.filter((seat) => seat === "5-1")).toHaveLength(1);
@@ -98,11 +98,11 @@ describe("karta B — rezerwacja", () => {
 
     const missingEvent = await reserve(reservationPayload({ eventId: "nie-ma" }));
     expect(missingEvent.statusCode).toBe(404);
-    expect(missingEvent.json()).toEqual({ error: "EVENT_OR_SEAT_NOT_FOUND" });
+    expect(missingEvent.json()).toEqual({ error: "EVENT_OR_SEAT_NOT_FOUND", message: expect.any(String) });
 
     const missingSeat = await reserve(reservationPayload({ seatId: "5-99" }));
     expect(missingSeat.statusCode).toBe(404);
-    expect(missingSeat.json()).toEqual({ error: "EVENT_OR_SEAT_NOT_FOUND" });
+    expect(missingSeat.json()).toEqual({ error: "EVENT_OR_SEAT_NOT_FOUND", message: expect.any(String) });
   });
 
   it("po TTL miejsce wraca do puli, a zakup daje 409", async () => {
@@ -123,7 +123,7 @@ describe("karta B — rezerwacja", () => {
       url: `/api/reservations/${reservationId}/purchase`,
     });
     expect(purchase.statusCode).toBe(409);
-    expect(purchase.json()).toEqual({ error: "RESERVATION_EXPIRED" });
+    expect(purchase.json()).toEqual({ error: "RESERVATION_EXPIRED", message: expect.any(String) });
 
     const again = await reserve();
     expect(again.statusCode).toBe(201);
@@ -141,7 +141,7 @@ describe("karta C — zakup", () => {
       url: `/api/reservations/${reservationId}/purchase`,
     });
     expect(response.statusCode).toBe(402);
-    expect(response.json()).toEqual({ error: "PAYMENT_REQUIRED" });
+    expect(response.json()).toEqual({ error: "PAYMENT_REQUIRED", message: expect.any(String) });
     expect(ctx.services.jobs.stats().total).toBe(0);
   });
 
@@ -188,6 +188,6 @@ describe("karta C — zakup", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: "RESERVATION_NOT_FOUND" });
+    expect(response.json()).toEqual({ error: "RESERVATION_NOT_FOUND", message: expect.any(String) });
   });
 });

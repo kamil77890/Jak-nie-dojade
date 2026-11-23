@@ -92,7 +92,7 @@ describe("karta A — saldo punktów (Voucherify)", () => {
     expect(response.statusCode).toBe(503);
     expect(response.headers["retry-after"]).toBe("5");
     // Nic wewnętrznego nie wycieka: tylko kod i czas ponowienia.
-    expect(response.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", retryAfter: 5 });
+    expect(response.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 5 });
 
     // E-mail, który nic nie kupił, ma 1000 punktów bez pytania Voucherify — nawet w awarii.
     const fresh = await loyalty("nowy@example.com");

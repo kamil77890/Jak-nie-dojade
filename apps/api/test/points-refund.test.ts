@@ -230,7 +230,7 @@ describe("zadanie 1 — zwrot płatności oddaje punkty tej sesji dokładnie raz
     const failed = await sendWebhook(ctx, event);
     // Stripe ponawia każdą odpowiedź spoza 2xx; ciało nie zdradza przyczyny.
     expect(failed.statusCode).toBe(503);
-    expect(failed.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", retryAfter: 5 });
+    expect(failed.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 5 });
     expect(failed.headers["retry-after"]).toBe("5");
     expect(ctx.payments.refunds).toHaveLength(1);
     expect(sessionRow(lastSession().result.id).points_refunded_at).toBeNull();
@@ -253,7 +253,7 @@ describe("zadanie 1 — zwrot płatności oddaje punkty tej sesji dokładnie raz
     ctx.payments.failWith = stripeDown();
     const failed = await sendWebhook(ctx, event);
     expect(failed.statusCode).toBe(500);
-    expect(failed.json()).toEqual({ error: "INTERNAL_ERROR" });
+    expect(failed.json()).toEqual({ error: "INTERNAL_ERROR", message: expect.any(String) });
     expect(provider.awards).toEqual([]);
 
     ctx.payments.failWith = null;
@@ -375,7 +375,7 @@ describe("zadanie 2 — zmiana liczby punktów przy otwartej sesji", () => {
     // Saldo 600 + 400 wracające = 1000 < 1001.
     const tooMany = await checkout(reservationId, 1001);
     expect(tooMany.statusCode).toBe(409);
-    expect(tooMany.json()).toEqual({ error: "INSUFFICIENT_POINTS" });
+    expect(tooMany.json()).toEqual({ error: "INSUFFICIENT_POINTS", message: expect.any(String) });
     expect(ctx.payments.expired).toEqual([]);
     expect(await balance()).toBe(600);
     expect((await checkout(reservationId, 400)).json()).toEqual(first.json());
@@ -411,7 +411,7 @@ describe("zadanie 2 — zmiana liczby punktów przy otwartej sesji", () => {
 
     const response = await checkout(reservationId, 0);
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: "RESERVATION_PAID" });
+    expect(response.json()).toEqual({ error: "RESERVATION_PAID", message: expect.any(String) });
     expect(ctx.payments.sessions).toHaveLength(1);
     expect(await balance()).toBe(0);
 
@@ -535,7 +535,7 @@ describe("zadanie 4 — kody HTTP i walidacja checkoutu z punktami", () => {
     for (const points of [true, {}, [100], "100", -5, 0.5, 1e300, Number.MAX_SAFE_INTEGER + 1]) {
       const response = await checkout(reservationId, points);
       expect(response.statusCode, JSON.stringify(points)).toBe(400);
-      expect(response.json()).toEqual({ error: "VALIDATION_ERROR" });
+      expect(response.json()).toEqual({ error: "VALIDATION_ERROR", message: expect.any(String) });
     }
 
     const arrayBody = await ctx.app.inject({
@@ -553,7 +553,7 @@ describe("zadanie 4 — kody HTTP i walidacja checkoutu z punktami", () => {
       payload: '{"points": 10',
     });
     expect(brokenJson.statusCode).toBe(400);
-    expect(brokenJson.json()).toEqual({ error: "VALIDATION_ERROR" });
+    expect(brokenJson.json()).toEqual({ error: "VALIDATION_ERROR", message: expect.any(String) });
 
     expect(ctx.payments.calls).toBe(0);
   });
@@ -571,14 +571,14 @@ describe("zadanie 4 — kody HTTP i walidacja checkoutu z punktami", () => {
 
     const huge = await checkout(reservationId, 1_000_000_000);
     expect(huge.statusCode).toBe(409);
-    expect(huge.json()).toEqual({ error: "POINTS_LIMIT_EXCEEDED" });
+    expect(huge.json()).toEqual({ error: "POINTS_LIMIT_EXCEEDED", message: expect.any(String) });
 
     const half = await checkout(reservationId, PRICE / 2 + 1);
     expect(half.statusCode).toBe(409);
 
     const unknown = await checkout("nie-ma-takiej", 100);
     expect(unknown.statusCode).toBe(404);
-    expect(unknown.json()).toEqual({ error: "RESERVATION_NOT_FOUND" });
+    expect(unknown.json()).toEqual({ error: "RESERVATION_NOT_FOUND", message: expect.any(String) });
 
     // Pusty identyfikator po trim — 400, jak w reszcie /api/reservations/:id.
     const blank = await ctx.app.inject({
@@ -597,7 +597,7 @@ describe("zadanie 4 — kody HTTP i walidacja checkoutu z punktami", () => {
     const withPoints = await checkout(reservationId, 100);
     expect(withPoints.statusCode).toBe(503);
     expect(withPoints.headers["retry-after"]).toBe("5");
-    expect(withPoints.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", retryAfter: 5 });
+    expect(withPoints.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 5 });
     expect(ctx.payments.calls).toBe(0);
 
     const cardOnly = await checkout(reservationId, 0);
@@ -613,7 +613,7 @@ describe("zadanie 4 — kody HTTP i walidacja checkoutu z punktami", () => {
 
     const again = await checkout(reservationId, 200);
     expect(again.statusCode).toBe(409);
-    expect(again.json()).toEqual({ error: "RESERVATION_PAID" });
+    expect(again.json()).toEqual({ error: "RESERVATION_PAID", message: expect.any(String) });
     expect(await balance()).toBe(900);
   });
 });
@@ -655,5 +655,87 @@ describe("migracja bazy — points_refunded_at", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("Stripe i Voucherify padają naraz przy tworzeniu sesji", () => {
+  /** Karta + bonus powitalny przed awarią — inaczej test psułby samo założenie konta. */
+  async function setupWithAccount(): Promise<string> {
+    await setup();
+    await ctx.services.loyalty.ensureAccount(EMAIL, "critical");
+    return reserve();
+  }
+
+  function refundJobs() {
+    return ctx.services.db
+      .prepare("SELECT input, completed_at FROM jobs WHERE task = 'refund-points' ORDER BY created_at")
+      .all() as Array<{ input: string; completed_at: string | null }>;
+  }
+
+  it("zwrot punktów trafia do kolejki zamiast przepaść; worker oddaje każde pobranie dokładnie raz", async () => {
+    const reservationId = await setupWithAccount();
+    const key = newIdempotencyKey();
+
+    ctx.payments.failWith = stripeDown();
+    provider.failAwards = true;
+
+    // Dwie próby z tym samym kluczem = dwa osobne pobrania punktów, więc dwa zaległe zwroty.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const failed = await checkout(reservationId, 500, key);
+      expect(failed.statusCode).toBe(503);
+      expect(failed.json()).toMatchObject({ error: "PAYMENTS_UNAVAILABLE" });
+    }
+    expect(provider.awards).toEqual([]);
+    expect(refundJobs()).toHaveLength(2);
+    expect(JSON.parse(refundJobs()[0]!.input)).toEqual({
+      reservationId,
+      email: EMAIL,
+      points: 500,
+      reason: "stripe_session_failed",
+    });
+    expect(await balance()).toBe(0);
+
+    // Voucherify wstał: worker oddaje oba pobrania, a trzecie przejście nie ma nic do roboty.
+    provider.failAwards = false;
+    expect(await ctx.services.worker.runOnce()).toBe(true);
+    expect(await ctx.services.worker.runOnce()).toBe(true);
+    expect(await ctx.services.worker.runOnce()).toBe(false);
+    expect(provider.awards).toEqual([500, 500]);
+    expect(refundJobs().every((job) => job.completed_at !== null)).toBe(true);
+    expect(await balance()).toBe(1000);
+
+    // Stripe wstał: klient płaci z punktami jak zwykle.
+    ctx.payments.failWith = null;
+    expect((await checkout(reservationId, 500, key)).statusCode).toBe(200);
+    expect(await balance()).toBe(500);
+  });
+
+  it("gdy Voucherify przyjmie zwrot od razu, kolejka zostaje pusta", async () => {
+    await setup();
+    const reservationId = await reserve();
+
+    ctx.payments.failWith = stripeDown();
+    expect((await checkout(reservationId, 1000)).statusCode).toBe(503);
+    expect(provider.awards).toEqual([1000]);
+    expect(refundJobs()).toHaveLength(0);
+    expect(await balance()).toBe(1000);
+  });
+
+  it("zwrot wciąż nie wchodzi: job wraca z backoffem, a nie znika", async () => {
+    const reservationId = await setupWithAccount();
+
+    ctx.payments.failWith = stripeDown();
+    provider.failAwards = true;
+    expect((await checkout(reservationId, 1000)).statusCode).toBe(503);
+
+    expect(await ctx.services.worker.runOnce()).toBe(true);
+    expect(refundJobs()[0]!.completed_at).toBeNull();
+    expect(ctx.services.worker.snapshot().failed).toBe(1);
+
+    provider.failAwards = false;
+    ctx.advance(60_000);
+    expect(await ctx.services.worker.runOnce()).toBe(true);
+    expect(provider.awards).toEqual([1000]);
+    expect(await balance()).toBe(1000);
   });
 });

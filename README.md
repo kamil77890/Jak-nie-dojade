@@ -94,7 +94,7 @@ NODE_ENV=production RESERVATION_TTL_MINUTES=2 pnpm start
 ```
 
 - Przy `NODE_ENV=production` API słucha na `0.0.0.0` (inaczej `127.0.0.1`), więc działa w kontenerze i na serwerze. `HOST` nadpisuje tę wartość, a port bierze się z `PORT` (domyślnie `3001`).
-- Gdy istnieje `apps/web/dist/index.html`, API serwuje frontend. Trasy Reacta (`/lab`, `/events/...`) dostają `index.html`. `/api/*` dla nieznanych ścieżek i brakujące pliki dalej zwracają JSON `404 { "error": "NOT_FOUND" }`. Wyłączysz to przez `SERVE_WEB=false`, a inny katalog wskażesz przez `WEB_DIST_PATH`.
+- Gdy istnieje `apps/web/dist/index.html`, API serwuje frontend. Trasy Reacta (`/lab`, `/events/...`) dostają `index.html`. `/api/*` dla nieznanych ścieżek i brakujące pliki dalej zwracają JSON `404 { "error": "NOT_FOUND", "message": … }`. Wyłączysz to przez `SERVE_WEB=false`, a inny katalog wskażesz przez `WEB_DIST_PATH`.
 - `TRUST_PROXY` ustawiaj **tylko wtedy, gdy przed API naprawdę stoi proxy**. Bez proxy zostaw `false` (domyślnie): inaczej klient sam dopisze sobie `X-Forwarded-For` i obejdzie limit. Za jednym reverse proxy (nginx, Render, Railway) ustaw `TRUST_PROXY=1`, za dwoma (np. Cloudflare + nginx) `TRUST_PROXY=2` — to liczba proxy przed API. Wtedy limit liczy prawdziwe IP klienta, a podrobiony `X-Forwarded-For` go nie obchodzi, bo API bierze adres dopisany przez proxy, nie przez klienta. Nie używaj `TRUST_PROXY=true`: wtedy API ufa całemu nagłówkowi i ostrzega o tym przy starcie.
 - Panel ops jest przy `NODE_ENV=production` domyślnie **wyłączony** (`/api/ops/*` → `404`). Patrz [Bezpieczeństwo panelu ops](#bezpieczeństwo-panelu-ops).
 - Mock poczty (`apps/mock-mail`) na wdrożeniu nie jest potrzebny. Bez niego bilet nadal jest wydawany, a job e-mail po limicie prób trafia do DLQ.
@@ -169,7 +169,7 @@ Mapowanie praktyk na kod i scenariusze: [`docs/PRACTICES.md`](./docs/PRACTICES.m
 | `POST` | `/api/webhooks/stripe` | `200 { received: true }` | `400 INVALID_SIGNATURE`, `500` (zwrot do ponowienia) |
 | `POST` | `/api/reservations/:id/purchase` | `200 { code }` tylko po płatności | `402 PAYMENT_REQUIRED`, `404`, `409 RESERVATION_EXPIRED` |
 
-Wszystkie błędy mają envelope `{ error: string }`; status HTTP niesie znaczenie.
+Wszystkie błędy mają envelope `{ error, message, retryAfter? }`: `error` to stały kod, `message` komunikat po polsku (przy `5xx` ogólny), `retryAfter` tylko przy `429`/`503`. Status HTTP niesie znaczenie.
 
 - Drugie zajęcie tego samego miejsca daje `409 SEAT_UNAVAILABLE` — także powtórka identycznego requestu i dwa równoległe requesty. Pierwsza rezerwacja zostaje bez zmian.
 - Bilet wydaje wyłącznie webhook Stripe'a. Księgowanie jest idempotentne: ponowna dostawa nie tworzy drugiego kodu ani joba e-mail. Spóźniona albo podwójna płatność jest automatycznie zwracana (reguły w `CONTRACT.md` §10.4).

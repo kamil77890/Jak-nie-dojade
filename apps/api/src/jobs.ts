@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { JobState, JobView, QueueStats } from "@pas/shared";
 import { type Db, transaction } from "./db";
 
+/** Mail z biletem + naliczenie punktów za zakup (Etap I–III). */
+export const SEND_TICKET_EMAIL_TASK = "send-ticket-email";
+/** Zwrot punktów, którego nie udało się zrobić od razu (Stripe i Voucherify padły naraz). */
+export const REFUND_POINTS_TASK = "refund-points";
+
 export interface JobInput {
   [key: string]: unknown;
 }

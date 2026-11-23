@@ -6,7 +6,7 @@ import {
 import type { BookingService } from "./booking";
 import type { EventCatalog } from "./catalog";
 import type { AppConfig } from "./config";
-import type { JobQueue, JobRecord } from "./jobs";
+import { type JobQueue, type JobRecord, REFUND_POINTS_TASK, SEND_TICKET_EMAIL_TASK } from "./jobs";
 import { LoyaltyThrottledError, type LoyaltyService } from "./loyalty";
 import { LoyaltyUnavailableError } from "./errors";
 import { MailDeliveryError, type Mailer, type TicketMail } from "./mail";
@@ -75,7 +75,16 @@ export class TicketMailWorker {
     this.lastRunAt = new Date(this.dependencies.clock()).toISOString();
 
     try {
-      if (job.task !== "send-ticket-email") {
+      if (job.task === REFUND_POINTS_TASK) {
+        // Zaległy zwrot punktów: tylko Voucherify, bez maila. Błąd idzie do wspólnej
+        // obsługi niżej — backoff, czekanie na limit wywołań albo DLQ w /lab.
+        const refund = readRefundInput(job);
+        await this.dependencies.loyalty.awardPoints(refund.email, refund.points);
+        queue.ack(job.id);
+        this.processed += 1;
+        return true;
+      }
+      if (job.task !== SEND_TICKET_EMAIL_TASK) {
         throw new UnsupportedJobError(`Nieznane zadanie: ${job.task}`);
       }
       const message = this.compose(job);
@@ -197,6 +206,15 @@ export class TicketMailWorker {
 }
 
 class MissingReservationError extends Error {}
+
+/** Wejście joba zwrotu punktów; zły kształt to błąd trwały (od razu DLQ, bez prób). */
+function readRefundInput(job: JobRecord): { email: string; points: number } {
+  const { email, points } = job.input;
+  if (typeof email !== "string" || !email || !Number.isSafeInteger(points) || (points as number) <= 0) {
+    throw new UnsupportedJobError("Job zwrotu punktów bez poprawnego e-maila lub liczby punktów.");
+  }
+  return { email, points: points as number };
+}
 
 class UnsupportedJobError extends Error {}
 

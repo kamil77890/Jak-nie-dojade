@@ -17,6 +17,7 @@ Zakres: konta punktowe w Voucherify, płatność punktami w Stripe Checkout, nal
 | Zmiana punktów | inna liczba punktów przy otwartej sesji → stara sesja wygaszona w Stripe, punkty wracają, nowa sesja na nową kwotę |
 | UI | saldo po wyjściu z pola e-mail (raz na adres, wynik w `sessionStorage`), pole „Użyj punktów” w podsumowaniu bez drugiego zapytania, podsumowanie na bilecie |
 | Odporność | timeout, retry, circuit breaker i `503 LOYALTY_UNAVAILABLE` dla Voucherify; mail przez kolejkę |
+| Błędy API | koperta `{ error, message, retryAfter? }`: kod dla programu, komunikat po polsku dla człowieka; `5xx` bez szczegółów |
 
 ## Decyzje projektowe
 
@@ -87,7 +88,9 @@ Migracje są automatyczne przy starcie (`apps/api/src/db.ts`):
 - walidacja `points` (400) vs reguły biznesowe (409) vs awarie (503 z `Retry-After`, bez szczegółów),
 - migracja `points_refunded_at` na starej bazie,
 - mail z podsumowaniem punktów,
-- awaria Voucherify → `503 LOYALTY_UNAVAILABLE`.
+- awaria Voucherify → `503 LOYALTY_UNAVAILABLE`,
+- Stripe i Voucherify padają naraz przy tworzeniu sesji → zaległy zwrot w kolejce, każde pobranie oddane dokładnie raz (`points-refund.test.ts`),
+- koperta błędu `{ error, message, retryAfter? }`: konkretny komunikat przy `4xx`, ogólny przy `5xx` i błędach parsera, bez przyczyny technicznej (`error-envelope.test.ts`).
 
 ## Ograniczenia
 
@@ -95,7 +98,7 @@ Migracje są automatyczne przy starcie (`apps/api/src/db.ts`):
 - `LOYALTY_PROVIDER=memory` nie przeżywa restartu i nie nadaje się na produkcję.
 - Jedna instancja API serializuje pierwsze utworzenie konta w pamięci procesu; przy wielu instancjach drugie `createMember` dostaje od Voucherify „karta istnieje” i trafia w tę samą kartę, a bonus chroni `welcome_pending` w bazie.
 - Legacy API Voucherify nie ma klucza idempotencji: timeout, po którym punkty jednak zostały dopisane, może przy ponowieniu dać podwójny zwrot (wybraliśmy to zamiast utraty punktów). Awaria procesu między znacznikiem a Voucherify może z kolei zostawić punkty niezwrócone — oba przypadki do ręcznej korekty.
-- Punkty zwracane po odmowie Stripe'a przy tworzeniu sesji (przed zapisem sesji w bazie) nadal są zwracane „best effort” — gdy wtedy padnie także Voucherify, punkty nie wrócą automatycznie.
+- Punkty po odmowie Stripe'a przy tworzeniu sesji wracają od razu, a gdy padnie także Voucherify — przez job `refund-points` w kolejce (retry, czekanie na limit). Job w DLQ (np. Voucherify leży dłużej niż wszystkie próby) trzeba ponowić ręcznie w `/lab`.
 - Blokada checkoutu per rezerwacja działa w obrębie jednego procesu (jak cała baza SQLite).
 - Budżet wywołań i cache salda są w pamięci procesu: restart zeruje licznik (Voucherify liczy dalej — dlatego zapas 90 vs 100), a przy kilku instancjach trzeba podzielić `VOUCHERIFY_HOURLY_BUDGET` albo przenieść licznik do Redisa.
 - E-mail bez wiersza w `loyalty_accounts` ma w odczycie 1000 punktów. Jeśli baza zgubiła mapowanie, a karta istnieje w Voucherify, odczyt pokaże 1000 do pierwszego zapisu (który odnajdzie kartę i jej prawdziwe saldo; pobranie ponad saldo kończy się `409`).

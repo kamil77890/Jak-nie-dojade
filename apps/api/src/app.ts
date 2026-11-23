@@ -12,7 +12,8 @@ import {
   mergeConfig,
 } from "./config";
 import { type Db, openDatabase } from "./db";
-import { BusyError, HttpError, RateLimitedError, UnauthorizedError } from "./errors";
+import type { ApiError } from "@pas/shared";
+import { BusyError, HttpError, OverloadedError, RateLimitedError, UnauthorizedError } from "./errors";
 import { GuardState, addLease, releaseLeases } from "./guards";
 import { JobQueue } from "./jobs";
 import {
@@ -130,6 +131,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     gateway: paymentGateway,
     breaker: paymentBreaker,
     loyalty,
+    jobs,
     publicUrl: config.payments.publicUrl,
     clock,
   });
@@ -187,21 +189,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       if (error.retryAfter !== undefined) {
         reply.header("retry-after", String(error.retryAfter));
       }
-      const payload: { error: string; retryAfter?: number } = { error: error.code };
-      if (error.retryAfter !== undefined) payload.retryAfter = error.retryAfter;
-      reply.code(error.statusCode).send(payload);
+      // Komunikat HttpError jest zawsze tekstem dla klienta (przyczyna techniczna siedzi w `cause`).
+      reply.code(error.statusCode).send(errorBody(error.code, error.message, error.retryAfter));
       return;
     }
 
     const statusCode = (error as { statusCode?: number }).statusCode;
     // Błędy Fastify z zakresu 4xx (zły JSON, zły Content-Type, za duże body) to odmowa, nie awaria.
     if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
-      reply.code(statusCode).send({ error: "VALIDATION_ERROR" });
+      // Treść błędu Fastify bywa techniczna — klient dostaje stały komunikat.
+      reply.code(statusCode).send(errorBody("VALIDATION_ERROR", GENERIC_MESSAGES.VALIDATION_ERROR));
       return;
     }
 
     request.log.error({ err: error }, "Nieobsłużony błąd API");
-    reply.code(500).send({ error: "INTERNAL_ERROR" });
+    reply.code(500).send(errorBody("INTERNAL_ERROR", GENERIC_MESSAGES.INTERNAL_ERROR));
   });
 
   app.setNotFoundHandler((request, reply) => {
@@ -211,7 +213,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       reply.header("cache-control", "no-cache");
       return reply.type("text/html").sendFile("index.html");
     }
-    return reply.code(404).send({ error: "NOT_FOUND" });
+    return reply.code(404).send(errorBody("NOT_FOUND", GENERIC_MESSAGES.NOT_FOUND));
   });
 
   // Zakup nie ma body, ale klienci często i tak wysyłają `Content-Type: application/json`.
@@ -277,10 +279,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     if (guards.inFlight >= config.overload.maxInFlight) {
       guards.loadShedRejected += 1;
       reply.header("retry-after", String(config.overload.retryAfterSeconds));
-      return reply.code(503).send({
-        error: "OVERLOADED",
-        retryAfter: config.overload.retryAfterSeconds,
-      });
+      const overloaded = new OverloadedError(config.overload.retryAfterSeconds);
+      return reply
+        .code(503)
+        .send(errorBody(overloaded.code, overloaded.message, overloaded.retryAfter));
     }
 
     guards.inFlight += 1;
@@ -549,4 +551,16 @@ function setRateLimitHeaders(
   reply.header("ratelimit-limit", String(capacity));
   reply.header("ratelimit-remaining", String(result.remaining));
   reply.header("ratelimit-reset", String(result.retryAfterSeconds));
+}
+
+/** Stałe komunikaty dla błędów spoza HttpError — nigdy nie ujawniają przyczyny. */
+const GENERIC_MESSAGES = {
+  VALIDATION_ERROR: "Nieprawidłowe dane wejściowe.",
+  NOT_FOUND: "Nie znaleziono zasobu.",
+  INTERNAL_ERROR: "Wystąpił błąd serwera. Spróbuj ponownie za chwilę.",
+} as const;
+
+/** Jedna koperta błędu dla całego API: kod dla programu, komunikat dla człowieka. */
+function errorBody(code: string, message: string, retryAfter?: number): ApiError {
+  return retryAfter === undefined ? { error: code, message } : { error: code, message, retryAfter };
 }

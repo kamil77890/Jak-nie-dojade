@@ -11,6 +11,7 @@ import {
   ReservationPaidError,
   ValidationError,
 } from "./errors";
+import { type JobQueue, REFUND_POINTS_TASK } from "./jobs";
 import type { LoyaltyService } from "./loyalty";
 import {
   type ExpireCheckoutResult,
@@ -47,6 +48,8 @@ export interface CheckoutServiceOptions {
   breaker: CircuitBreaker;
   /** Voucherify (albo fallback pamięciowy) — źródło prawdy o saldzie punktów. */
   loyalty: LoyaltyService;
+  /** Kolejka jobów — zaległy zwrot punktów, gdy Voucherify nie przyjął go od razu. */
+  jobs: JobQueue;
   /** Adres frontendu, na który Stripe odsyła klienta, np. https://kasa.example.com. */
   publicUrl: string;
   clock: () => number;
@@ -361,7 +364,7 @@ export class CheckoutService {
     } catch (error) {
       // Stripe nie odpowiada, odmówił albo bezpiecznik jest otwarty: rezerwacja zostaje,
       // a punkty wracają, żeby klient mógł spróbować ponownie z tym samym kluczem.
-      if (points > 0) await loyalty.awardPoints(reservation.email, points).catch(() => undefined);
+      if (points > 0) await this.returnPointsAfterStripeFailure(reservation.id, reservation.email, points);
       throw new PaymentsUnavailableError(5, error);
     }
 
@@ -386,6 +389,29 @@ export class CheckoutService {
       );
 
     return { url: session.url };
+  }
+
+  /**
+   * Stripe nie utworzył sesji, a punkty już zeszły z karty. Próbujemy oddać je od razu;
+   * gdy Voucherify też nie odpowiada, zwrot trafia do kolejki jobów (retry z backoffem,
+   * czekanie na limit, DLQ widoczne w /lab) zamiast przepaść. Każde wywołanie odpowiada
+   * dokładnie jednemu pobraniu punktów (ponowienie z tym samym kluczem pobiera je od nowa),
+   * więc każde dostaje własny job — wspólne id zgubiłoby drugi zwrot.
+   */
+  private async returnPointsAfterStripeFailure(
+    reservationId: string,
+    email: string,
+    points: number,
+  ): Promise<void> {
+    try {
+      await this.options.loyalty.awardPoints(email, points);
+    } catch {
+      this.options.jobs.enqueue(
+        REFUND_POINTS_TASK,
+        { reservationId, email, points, reason: "stripe_session_failed" },
+        { now: this.options.clock() },
+      );
+    }
   }
 
   private findOpen(reservationId: string): CheckoutSessionRow | null {

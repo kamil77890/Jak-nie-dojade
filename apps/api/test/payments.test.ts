@@ -100,7 +100,7 @@ describe("GET /api/reservations/:id", () => {
     ctx = await createTestContext();
     const response = await status("nie-ma-takiej");
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: "RESERVATION_NOT_FOUND" });
+    expect(response.json()).toEqual({ error: "RESERVATION_NOT_FOUND", message: expect.any(String) });
   });
 });
 
@@ -111,7 +111,7 @@ describe("karta A — POST /api/reservations/:id/checkout", () => {
 
     const missing = await startCheckout(ctx, reservationId, null);
     expect(missing.statusCode).toBe(400);
-    expect(missing.json()).toEqual({ error: "IDEMPOTENCY_KEY_REQUIRED" });
+    expect(missing.json()).toEqual({ error: "IDEMPOTENCY_KEY_REQUIRED", message: expect.any(String) });
 
     const tooShort = await startCheckout(ctx, reservationId, "abc");
     expect(tooShort.statusCode).toBe(400);
@@ -181,13 +181,13 @@ describe("karta A — POST /api/reservations/:id/checkout", () => {
     await payReservation(ctx, paid.reservationId);
     const again = await startCheckout(ctx, paid.reservationId);
     expect(again.statusCode).toBe(409);
-    expect(again.json()).toEqual({ error: "RESERVATION_PAID" });
+    expect(again.json()).toEqual({ error: "RESERVATION_PAID", message: expect.any(String) });
 
     const stale = await reserve("5-2");
     ctx.advance(ctx.services.config.ttlMs);
     const expired = await startCheckout(ctx, stale.reservationId);
     expect(expired.statusCode).toBe(409);
-    expect(expired.json()).toEqual({ error: "RESERVATION_EXPIRED" });
+    expect(expired.json()).toEqual({ error: "RESERVATION_EXPIRED", message: expect.any(String) });
 
     const unknown = await startCheckout(ctx, "nie-ma-takiej");
     expect(unknown.statusCode).toBe(404);
@@ -273,7 +273,7 @@ describe("karta B — POST /api/webhooks/stripe", () => {
 
     const forged = await sendWebhook(ctx, paidEvent(reservationId, sessionId), "whsec_obcy_sekret");
     expect(forged.statusCode).toBe(400);
-    expect(forged.json()).toEqual({ error: "INVALID_SIGNATURE" });
+    expect(forged.json()).toEqual({ error: "INVALID_SIGNATURE", message: expect.any(String) });
 
     const unsigned = await ctx.app.inject({
       method: "POST",

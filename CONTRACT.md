@@ -60,10 +60,14 @@ interface Reservation {
 Wszystkie odpowiedzi sukcesu są JSON-em. Wszystkie błędy mają wspólny envelope:
 
 ```json
-{ "error": "SEAT_UNAVAILABLE" }
+{ "error": "SEAT_UNAVAILABLE", "message": "To miejsce jest już zajęte." }
 ```
 
-Status HTTP niesie znaczenie; sukces nigdy nie zwraca `error`.
+- `error` — stały kod do obsługi w programie (lista w §6 i w `packages/shared`),
+- `message` — komunikat odmowy po polsku dla człowieka; przy `5xx` zawsze ogólny, bez przyczyny technicznej (ta trafia do logu serwera),
+- `retryAfter` — tylko przy `429`/`503`, ta sama wartość co nagłówek `Retry-After`.
+
+Status HTTP niesie znaczenie; sukces nigdy nie zwraca `error`. UI może pokazać `message` wprost albo dobrać własny tekst po kodzie (`apps/web/src/lib/errors.ts` robi to drugie, a `message` bierze dla `VALIDATION_ERROR` i kodów, których jeszcze nie zna).
 
 ### `GET /api/events`
 
@@ -238,7 +242,7 @@ Te endpointy istnieją dla demo praktyk E04–E06 i panelu `/lab`. Nie są potrz
 
 `OPS_ENABLED=false` wyłącza całą tę grupę (poza healthcheckiem) i wtedy odpowiada ona `404 NOT_FOUND`. Przy `NODE_ENV=production` grupa jest domyślnie wyłączona. Gdy ustawiony jest `OPS_TOKEN`, każdy request do `/api/ops/*` wymaga nagłówka `Authorization: Bearer <OPS_TOKEN>`, a bez niego dostaje `401 UNAUTHORIZED`.
 
-Nieznana ścieżka pod `/api/*` zawsze zwraca `404 { "error": "NOT_FOUND" }`, także wtedy, gdy API serwuje zbudowany frontend.
+Nieznana ścieżka pod `/api/*` zawsze zwraca `404 { "error": "NOT_FOUND", "message": "Nie znaleziono zasobu." }`, także wtedy, gdy API serwuje zbudowany frontend.
 
 ## 8. Poza kontraktem Etapu I
 
@@ -474,7 +478,7 @@ Body jest opcjonalne:
 | `409` | `INSUFFICIENT_POINTS` | saldo mniejsze niż liczba punktów |
 | `503` | `LOYALTY_UNAVAILABLE` | Voucherify wolny/niedostępny/odrzucił żądanie, odpowiedział `429` albo wyczerpał się nasz budżet wywołań; zawsze z `Retry-After` |
 
-Pozostałe odpowiedzi checkoutu z punktami używają kodów z §10.1 (`400 VALIDATION_ERROR`, `400 IDEMPOTENCY_KEY_REQUIRED`, `404 RESERVATION_NOT_FOUND`, `409 RESERVATION_EXPIRED`, `409 RESERVATION_PAID`, `503 PAYMENTS_UNAVAILABLE`). Koperta błędu się nie zmienia: `{ "error": "KOD", "retryAfter"? }`; komunikat po polsku dobiera UI po kodzie (`apps/web/src/lib/errors.ts`). Odpowiedzi `5xx` nie zawierają przyczyny (ta trafia do logu serwera); nieobsłużony błąd to zawsze `500 { "error": "INTERNAL_ERROR" }`.
+Pozostałe odpowiedzi checkoutu z punktami używają kodów z §10.1 (`400 VALIDATION_ERROR`, `400 IDEMPOTENCY_KEY_REQUIRED`, `404 RESERVATION_NOT_FOUND`, `409 RESERVATION_EXPIRED`, `409 RESERVATION_PAID`, `503 PAYMENTS_UNAVAILABLE`). Koperta błędu jak w §3: `{ "error": "KOD", "message": "…", "retryAfter"? }`. Odpowiedzi `5xx` nie zawierają przyczyny (ta trafia do logu serwera); nieobsłużony błąd to zawsze `500 { "error": "INTERNAL_ERROR", "message": "Wystąpił błąd serwera. Spróbuj ponownie za chwilę." }`.
 
 Webhook: `400 INVALID_SIGNATURE`; `500`, gdy nie udał się zwrot pieniędzy; `503 LOYALTY_UNAVAILABLE`, gdy nie udał się zwrot punktów. W obu ostatnich przypadkach Stripe ponawia dostawę. Limit i saldo zostają przy `409` (jak `SEAT_UNAVAILABLE`): żądanie jest poprawne składniowo, ale koliduje ze stanem; `422` w repo nie występuje.
 
@@ -487,7 +491,7 @@ Webhook: `400 INVALID_SIGNATURE`; `500`, gdy nie udał się zwrot pieniędzy; `5
 | `429` od Voucherify | bez natychmiastowego ponowienia; `Retry-After` (sekundy albo data HTTP, bez nagłówka 60 s, maks. 1 h) blokuje wszystkie wywołania do Voucherify i trafia do klienta jako `Retry-After` przy `503`; `429` nie liczy się jako awaria bezpiecznika |
 | zużycie limitu przez odczyty salda (skrypt, literówki) | odczyt salda e-maila bez karty nie woła Voucherify ani nie zakłada karty; cache salda 30 s; limit per IP na `GET /api/loyalty` (`RATE_LIMIT_LOYALTY_CAPACITY` 10, `RATE_LIMIT_LOYALTY_PER_MINUTE` 6) → `429 RATE_LIMITED`; UI pyta raz po wyjściu z pola e-mail i pamięta wynik |
 | fałszywe karty w Voucherify (literówki, cudze e-maile) | karta powstaje dopiero przy pierwszym zapisie punktów (zakup), nie przy odczycie salda |
-| punkty pobrane, ale Stripe odmówił | natychmiastowy zwrot punktów (`awardPoints`) przed odpowiedzią `503`; powtórka z tym samym kluczem |
+| punkty pobrane, ale Stripe odmówił | natychmiastowy zwrot punktów (`awardPoints`) przed odpowiedzią `503`; gdy Voucherify też nie przyjmie zwrotu, trafia on do kolejki jobów (`refund-points`: retry z backoffem, czekanie na limit wywołań, DLQ w `/lab`) — jeden job na każde pobranie, więc ponowienia z tym samym kluczem niczego nie gubią |
 | podwójne kliknięcie / ponowienie checkoutu | `Idempotency-Key` + jedna otwarta sesja; punkty pobierane tylko przy tworzeniu sesji |
 | porzucona sesja Stripe | webhook `checkout.session.expired` zwraca punkty; powtórka zdarzenia nie dubluje zwrotu |
 | płatność zwrócona (spóźniona, zajęte miejsce, zła kwota, druga sesja, nieznana rezerwacja), a punkty przepadają | webhook po zwrocie pieniędzy oddaje punkty **tej** sesji przez `points_refunded_at`; zdarzenie zapisywane dopiero po obu zwrotach |

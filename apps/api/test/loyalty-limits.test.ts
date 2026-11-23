@@ -166,7 +166,7 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
     const refused = await checkout(reservationId, 1000);
     expect(refused.statusCode).toBe(503);
     expect(refused.headers["retry-after"]).toBe("120");
-    expect(refused.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", retryAfter: 120 });
+    expect(refused.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 120 });
     expect(accountRow(ctx, "anna@example.com")).toMatchObject({ welcome_pending: 1 });
     expect(ctx.payments.sessions).toHaveLength(0);
 
@@ -305,7 +305,7 @@ describe("budżet wywołań Voucherify w aplikacji (Sandbox: 100/h)", () => {
     const denied = await loyalty("celina@example.com");
     expect(denied.statusCode).toBe(503);
     expect(denied.headers["retry-after"]).toBe("3600");
-    expect(denied.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", retryAfter: 3600 });
+    expect(denied.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 3600 });
     expect(voucherify.fetchMock).toHaveBeenCalledTimes(2);
 
     // Saldo z cache nadal działa, a nowy e-mail nie potrzebuje Voucherify wcale.
@@ -370,7 +370,7 @@ describe("budżet wywołań Voucherify w aplikacji (Sandbox: 100/h)", () => {
 
     const response = await loyalty("anna@example.com");
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", retryAfter: 5 });
+    expect(response.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 5 });
     expect(response.body).not.toContain("secret");
     expect(response.body).not.toContain("CARD-");
   });
@@ -421,7 +421,7 @@ describe("GET /api/loyalty — walidacja i limit per IP", () => {
     for (const url of urls) {
       const response = await ctx.app.inject({ method: "GET", url });
       expect(response.statusCode, url).toBe(400);
-      expect(response.json()).toEqual({ error: "VALIDATION_ERROR" });
+      expect(response.json()).toEqual({ error: "VALIDATION_ERROR", message: expect.any(String) });
     }
     expect(provider.calls).toEqual([]);
   });
@@ -445,7 +445,7 @@ describe("GET /api/loyalty — walidacja i limit per IP", () => {
 
     const limited = await loyalty("anna@example.com");
     expect(limited.statusCode).toBe(429);
-    expect(limited.json()).toEqual({ error: "RATE_LIMITED", retryAfter: 10 });
+    expect(limited.json()).toEqual({ error: "RATE_LIMITED", message: expect.any(String), retryAfter: 10 });
     expect(limited.headers["retry-after"]).toBe("10");
     expect(limited.headers["ratelimit-limit"]).toBe("2");
 

@@ -61,6 +61,6 @@ describe("karta A — wydarzenia i mapa", () => {
     });
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: "EVENT_NOT_FOUND" });
+    expect(response.json()).toEqual({ error: "EVENT_NOT_FOUND", message: expect.any(String) });
   });
 });
