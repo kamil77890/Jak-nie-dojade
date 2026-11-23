@@ -310,6 +310,158 @@ describe("karta A — przycisk „Zapłać” na ekranie rezerwacji", () => {
   });
 });
 
+/** E-maile, o które UI zapytało `GET /api/loyalty` (każde to potencjalne wywołanie Voucherify). */
+function loyaltyCalls(fetchMock: ReturnType<typeof stubApi>): string[] {
+  return fetchMock.mock.calls
+    .map(([input]) => new URL(String(input), "http://localhost"))
+    .filter((url) => url.pathname === "/api/loyalty")
+    .map((url) => url.searchParams.get("email") ?? "");
+}
+
+describe("karta A — saldo punktów oszczędza limit Voucherify (100 wywołań/h)", () => {
+  it("literówki w trakcie pisania nie wysyłają zapytań; saldo po wyjściu z pola, raz na e-mail", async () => {
+    const fetchMock = stubApi((_method, path) => {
+      if (path === `/api/events/${event.id}`) return eventDetail();
+      if (path === "/api/loyalty") return json(200, { email: "jan@wp.pl.com", points: 1000 });
+      return json(404, {});
+    });
+    renderAt(reservePath);
+
+    const input = await screen.findByLabelText("Adres e-mail");
+    // „jan@wp.pl” wygląda na poprawny e-mail, ale klient pisze dalej.
+    for (const value of ["jan@wp.pl", "jan@wp.pl.", "jan@wp.pl.c", "jan@wp.pl.co", "Jan@wp.pl.com "]) {
+      fireEvent.change(input, { target: { value } });
+    }
+    // Dłużej niż dawny debounce (450 ms) — nadal żadnego zapytania.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(loyaltyCalls(fetchMock)).toEqual([]);
+
+    fireEvent.blur(input);
+    expect(await screen.findByText(/Masz 1\s*000 punktów/)).toBeTruthy();
+    expect(loyaltyCalls(fetchMock)).toEqual(["jan@wp.pl.com"]);
+
+    // Ponowne wejście i wyjście z pola z tym samym adresem nie pyta drugi raz.
+    fireEvent.focus(input);
+    fireEvent.blur(input);
+    fireEvent.blur(input);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(loyaltyCalls(fetchMock)).toEqual(["jan@wp.pl.com"]);
+  });
+
+  it("niepoprawny e-mail po wyjściu z pola nie wysyła zapytania", async () => {
+    const fetchMock = stubApi((_method, path) =>
+      path === `/api/events/${event.id}` ? eventDetail() : json(200, { email: "x", points: 1000 }),
+    );
+    renderAt(reservePath);
+
+    const input = await screen.findByLabelText("Adres e-mail");
+    for (const value of ["jan", "jan@", "jan@wp", "jan@wp.p"]) {
+      fireEvent.change(input, { target: { value } });
+      fireEvent.blur(input);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(loyaltyCalls(fetchMock)).toEqual([]);
+    expect(screen.queryByText(/Masz .* punktów/)).toBeNull();
+  });
+
+  it("503 LOYALTY_UNAVAILABLE: brak salda nie blokuje rezerwacji, a UI czeka Retry-After", async () => {
+    freezeDate(NOW);
+    const fetchMock = stubApi((method, path) => {
+      if (path === `/api/events/${event.id}`) return eventDetail();
+      if (path === "/api/loyalty") return json(503, { error: "LOYALTY_UNAVAILABLE", retryAfter: 120 });
+      if (method === "POST" && path === "/api/reservations") {
+        return json(201, { reservationId: "res-1", expiresAt: new Date(NOW + TWO_MINUTES).toISOString(), amount: 8900 });
+      }
+      return json(404, {});
+    });
+    renderAt(reservePath);
+
+    fireEvent.change(await screen.findByLabelText("Imię i nazwisko"), { target: { value: "Anna Kowalska" } });
+    const input = screen.getByLabelText("Adres e-mail");
+    fireEvent.change(input, { target: { value: "anna@example.com" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(loyaltyCalls(fetchMock)).toEqual(["anna@example.com"]));
+
+    // Inny adres w czasie Retry-After — bez zapytania (limit jest wspólny dla całej kasy).
+    fireEvent.change(input, { target: { value: "anna.k@example.com" } });
+    fireEvent.blur(input);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(loyaltyCalls(fetchMock)).toEqual(["anna@example.com"]);
+    expect(screen.queryByText(/Masz .* punktów/)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /Rezerwuję na/ }));
+    expect((await screen.findByRole("timer")).textContent).toBe("02:00");
+    // Ekran płatności też nie pyta przed Retry-After, a płatność kartą jest dostępna.
+    expect(payButton()?.textContent).toContain("Zapłać 89 zł");
+    expect(screen.queryByRole("spinbutton", { name: /użyj punktów/i })).toBeNull();
+    expect(loyaltyCalls(fetchMock)).toEqual(["anna@example.com"]);
+  });
+
+  it("ekran płatności używa salda pobranego przy rezerwacji — bez drugiego zapytania", async () => {
+    freezeDate(NOW);
+    const fetchMock = stubApi((method, path) => {
+      if (path === `/api/events/${event.id}`) return eventDetail();
+      if (path === "/api/loyalty") return json(200, { email: "anna@example.com", points: 1500 });
+      if (method === "POST" && path === "/api/reservations") {
+        return json(201, { reservationId: "res-1", expiresAt: new Date(NOW + TWO_MINUTES).toISOString(), amount: 8900 });
+      }
+      return json(404, {});
+    });
+    renderAt(reservePath);
+
+    fireEvent.change(await screen.findByLabelText("Imię i nazwisko"), { target: { value: "Anna Kowalska" } });
+    const input = screen.getByLabelText("Adres e-mail");
+    fireEvent.change(input, { target: { value: "anna@example.com" } });
+    fireEvent.blur(input);
+    expect(await screen.findByText(/Masz 1\s*500 punktów/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: /Rezerwuję na/ }));
+    expect(await screen.findByRole("spinbutton", { name: /użyj punktów/i })).toBeTruthy();
+    expect(screen.getByText(/1\s*500 pkt/)).toBeTruthy();
+    expect(loyaltyCalls(fetchMock)).toEqual(["anna@example.com"]);
+  });
+
+  it("429 przy saldzie: pole punktów znika, płatność kartą działa", async () => {
+    freezeDate(NOW);
+    const assign = vi.spyOn(redirectTo, "assign").mockImplementation(() => undefined);
+    const fetchMock = stubApi((method, path) => {
+      if (path === "/api/loyalty") return json(429, { error: "RATE_LIMITED", retryAfter: 10 });
+      if (method === "POST" && path === "/api/reservations/res-1/checkout") {
+        return json(200, { url: "https://checkout.stripe.com/c/pay/cs_test_card" });
+      }
+      return json(404, {});
+    });
+    saveReservation(view());
+    renderAt("/reservations/res-1");
+
+    await waitFor(() => expect(loyaltyCalls(fetchMock)).toHaveLength(1));
+    expect(screen.queryByRole("spinbutton", { name: /użyj punktów/i })).toBeNull();
+
+    fireEvent.click(payButton()!);
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://checkout.stripe.com/c/pay/cs_test_card"));
+    const checkoutCall = fetchMock.mock.calls.find(([url]) => String(url).endsWith("/checkout"));
+    expect(JSON.parse(String(checkoutCall?.[1]?.body))).toEqual({ points: 0 });
+  });
+
+  it("po zapłacie punktami zapamiętane saldo jest zapominane", async () => {
+    freezeDate(NOW);
+    vi.spyOn(redirectTo, "assign").mockImplementation(() => undefined);
+    window.sessionStorage.setItem("pas.loyalty.anna@example.com", JSON.stringify({ points: 1000, at: NOW }));
+    const fetchMock = stubApi((method, path) =>
+      method === "POST" && path === "/api/reservations/res-1/checkout"
+        ? json(200, { url: "https://checkout.stripe.com/c/pay/cs_test_points" })
+        : json(404, {}),
+    );
+    saveReservation(view());
+    renderAt("/reservations/res-1");
+
+    fireEvent.change(screen.getByRole("spinbutton", { name: /użyj punktów/i }), { target: { value: "1000" } });
+    fireEvent.click(payButton()!);
+    await waitFor(() => expect(window.sessionStorage.getItem("pas.loyalty.anna@example.com")).toBeNull());
+    expect(loyaltyCalls(fetchMock)).toEqual([]);
+  });
+});
+
 describe("karta C — powrót ze Stripe'a", () => {
   it("„płatność w toku…” sama zamienia się w bilet, gdy webhook oznaczy rezerwację", async () => {
     freezeDate(NOW);
