@@ -1,4 +1,4 @@
-import type { MailMessageView, OpsSnapshot, OpsStatus } from "@pas/shared";
+import type { LoyaltyOpsSnapshot, MailMessageView, OpsSnapshot, OpsStatus } from "@pas/shared";
 import type { FastifyInstance } from "fastify";
 import type { BookingService } from "../booking";
 import type { AppConfig } from "../config";
@@ -21,6 +21,8 @@ interface OpsDependencies {
   guards: GuardState;
   mailAdmin: MailAdmin;
   readGuards: Guard[];
+  /** Budżet Voucherify i cache salda (Etap III). */
+  loyalty?: () => LoyaltyOpsSnapshot;
 }
 
 const MAIL_MODES = new Set(["healthy", "slow", "down", "flaky"]);
@@ -54,6 +56,7 @@ export function registerOpsRoutes(app: FastifyInstance, dependencies: OpsDepende
         sent: mail?.sent ?? 0,
         lastModeChangeAt: mail?.lastModeChangeAt ?? null,
       },
+      ...(dependencies.loyalty ? { loyalty: dependencies.loyalty() } : {}),
     };
   };
 

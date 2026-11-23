@@ -39,10 +39,12 @@ export function describeApiError(error: unknown): string {
     case "IDEMPOTENCY_KEY_REQUIRED":
       return "Nie udało się przygotować płatności. Odśwież stronę i spróbuj jeszcze raz.";
     case "VALIDATION_ERROR":
-      return "Sprawdź dane w formularzu i spróbuj jeszcze raz.";
+      // API mówi, które pole jest złe (np. „Podaj poprawny adres e-mail.”) — to lepsze niż ogólnik.
+      return error.serverMessage ?? "Sprawdź dane w formularzu i spróbuj jeszcze raz.";
     case "NETWORK_ERROR":
       return "Nie ma połączenia z kasą. Sprawdź, czy API działa.";
     default:
-      return "Coś się nie udało. Spróbuj jeszcze raz.";
+      // Kod, którego front jeszcze nie zna: komunikat z API, bo 4xx/5xx zawsze go niosą.
+      return error.serverMessage ?? "Coś się nie udało. Spróbuj jeszcze raz.";
   }
 }

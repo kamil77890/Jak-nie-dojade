@@ -83,11 +83,11 @@ describe("E2E A → B → C przy TTL = 2 min", () => {
 
     const response = await purchase(reservationId);
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: "RESERVATION_EXPIRED" });
+    expect(response.json()).toEqual({ error: "RESERVATION_EXPIRED", message: expect.any(String) });
 
     const checkout = await startCheckout(ctx, reservationId);
     expect(checkout.statusCode).toBe(409);
-    expect(checkout.json()).toEqual({ error: "RESERVATION_EXPIRED" });
+    expect(checkout.json()).toEqual({ error: "RESERVATION_EXPIRED", message: expect.any(String) });
 
     // Ktoś inny może od razu zarezerwować to samo miejsce.
     const next = await reserve();

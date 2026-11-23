@@ -12,7 +12,8 @@ import {
   mergeConfig,
 } from "./config";
 import { type Db, openDatabase } from "./db";
-import { BusyError, HttpError, RateLimitedError, UnauthorizedError } from "./errors";
+import type { ApiError } from "@pas/shared";
+import { BusyError, HttpError, OverloadedError, RateLimitedError, UnauthorizedError } from "./errors";
 import { GuardState, addLease, releaseLeases } from "./guards";
 import { JobQueue } from "./jobs";
 import {
@@ -23,7 +24,7 @@ import {
 } from "./loyalty";
 import { HttpMailer, MailAdmin, ResendMailer, type Mailer } from "./mail";
 import { isTestSecretKey, type PaymentGateway, StripeGateway } from "./payments";
-import { Bulkhead, CircuitBreaker, TokenBucket } from "./resilience";
+import { Bulkhead, CallBudget, CircuitBreaker, TokenBucket } from "./resilience";
 import { registerEventRoutes, type Guard } from "./routes/events";
 import { registerOpsRoutes } from "./routes/ops";
 import { registerReservationRoutes } from "./routes/reservations";
@@ -54,6 +55,8 @@ export interface AppServices {
   jobs: JobQueue;
   bookings: BookingService;
   loyalty: LoyaltyService;
+  /** Budżet wywołań Voucherify (Sandbox: 100/h) — wspólny dla całego procesu. */
+  loyaltyBudget: CallBudget;
   breaker: CircuitBreaker;
   paymentBreaker: CircuitBreaker;
   checkout: CheckoutService;
@@ -93,11 +96,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     resetTimeoutMs: config.loyalty.breakerResetMs,
     clock,
   });
+  // Sandbox Voucherify przyjmuje najwyżej 100 wywołań na godzinę: budżet z priorytetami
+  // (odczyt < checkout < zwrot/naliczenie) pilnuje, żeby odczyty nie zjadły zakupów.
+  const loyaltyBudget = new CallBudget({
+    limit: config.loyalty.hourlyBudget,
+    windowMs: 60 * 60_000,
+    reserveCritical: config.loyalty.reserveCritical,
+    reserveCheckout: config.loyalty.reserveCheckout,
+    clock,
+  });
   const loyalty = new LoyaltyService(
     db,
-    options.loyaltyProvider ?? createLoyaltyProvider(config, loyaltyBreaker),
+    options.loyaltyProvider ?? createLoyaltyProvider(config, loyaltyBreaker, loyaltyBudget, clock),
     config.loyalty.welcomePoints,
     clock,
+    {
+      cacheTtlMs: config.loyalty.balanceCacheTtlMs,
+      staleTtlMs: config.loyalty.balanceStaleTtlMs,
+    },
   );
 
   // Stripe to druga zależność zewnętrzna (E04): własny bezpiecznik, niezależny od poczty.
@@ -115,6 +131,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     gateway: paymentGateway,
     breaker: paymentBreaker,
     loyalty,
+    jobs,
     publicUrl: config.payments.publicUrl,
     clock,
   });
@@ -172,21 +189,21 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       if (error.retryAfter !== undefined) {
         reply.header("retry-after", String(error.retryAfter));
       }
-      const payload: { error: string; retryAfter?: number } = { error: error.code };
-      if (error.retryAfter !== undefined) payload.retryAfter = error.retryAfter;
-      reply.code(error.statusCode).send(payload);
+      // Komunikat HttpError jest zawsze tekstem dla klienta (przyczyna techniczna siedzi w `cause`).
+      reply.code(error.statusCode).send(errorBody(error.code, error.message, error.retryAfter));
       return;
     }
 
     const statusCode = (error as { statusCode?: number }).statusCode;
     // Błędy Fastify z zakresu 4xx (zły JSON, zły Content-Type, za duże body) to odmowa, nie awaria.
     if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) {
-      reply.code(statusCode).send({ error: "VALIDATION_ERROR" });
+      // Treść błędu Fastify bywa techniczna — klient dostaje stały komunikat.
+      reply.code(statusCode).send(errorBody("VALIDATION_ERROR", GENERIC_MESSAGES.VALIDATION_ERROR));
       return;
     }
 
     request.log.error({ err: error }, "Nieobsłużony błąd API");
-    reply.code(500).send({ error: "INTERNAL_ERROR" });
+    reply.code(500).send(errorBody("INTERNAL_ERROR", GENERIC_MESSAGES.INTERNAL_ERROR));
   });
 
   app.setNotFoundHandler((request, reply) => {
@@ -196,7 +213,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       reply.header("cache-control", "no-cache");
       return reply.type("text/html").sendFile("index.html");
     }
-    return reply.code(404).send({ error: "NOT_FOUND" });
+    return reply.code(404).send(errorBody("NOT_FOUND", GENERIC_MESSAGES.NOT_FOUND));
   });
 
   // Zakup nie ma body, ale klienci często i tak wysyłają `Content-Type: application/json`.
@@ -229,6 +246,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     refillPerSecond: config.rateLimit.purchase.refillPerSecond,
     clock,
   });
+  const loyaltyLimiter = new TokenBucket({
+    capacity: config.rateLimit.loyalty.capacity,
+    refillPerSecond: config.rateLimit.loyalty.refillPerSecond,
+    clock,
+  });
 
   const isGuardedApi = (request: FastifyRequest): boolean => {
     const path = requestPath(request);
@@ -257,10 +279,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     if (guards.inFlight >= config.overload.maxInFlight) {
       guards.loadShedRejected += 1;
       reply.header("retry-after", String(config.overload.retryAfterSeconds));
-      return reply.code(503).send({
-        error: "OVERLOADED",
-        retryAfter: config.overload.retryAfterSeconds,
-      });
+      const overloaded = new OverloadedError(config.overload.retryAfterSeconds);
+      return reply
+        .code(503)
+        .send(errorBody(overloaded.code, overloaded.message, overloaded.retryAfter));
     }
 
     guards.inFlight += 1;
@@ -289,12 +311,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     createBulkheadGuard(writePool),
   ];
 
+  // Saldo punktów: osobny limit per IP przed pulą odczytów. Zły e-mail (400) oddaje
+  // żeton — nie dotknął Voucherify — ale zalew poprawnych adresów dostaje 429.
+  const loyaltyGuards: Guard[] = [
+    createRateLimitGuard(loyaltyLimiter, config.rateLimit.loyalty.capacity, config, guards, {
+      refundStatuses: REFUNDED_STATUSES,
+    }),
+    createBulkheadGuard(readPool),
+  ];
+
   registerEventRoutes(app, { catalog, bookings, readGuards });
   registerReservationRoutes(app, {
     bookings,
     checkout,
     loyalty,
     readGuards,
+    loyaltyGuards,
     reservationGuards,
     purchaseGuards,
   });
@@ -322,6 +354,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       guards,
       mailAdmin,
       readGuards,
+      loyalty: () => ({
+        provider: loyalty.providerName,
+        budget: loyaltyBudget.snapshot(),
+        cache: loyalty.snapshot(),
+      }),
     });
   }
 
@@ -378,6 +415,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       jobs,
       bookings,
       loyalty,
+      loyaltyBudget,
       breaker,
       paymentBreaker,
       checkout,
@@ -405,6 +443,8 @@ function createMailer(config: AppConfig): Mailer {
 function createLoyaltyProvider(
   config: AppConfig,
   breaker: CircuitBreaker,
+  budget: CallBudget,
+  clock: Clock,
 ): VoucherifyLoyaltyProvider | MemoryLoyaltyProvider {
   if (config.loyalty.provider === "voucherify") {
     return new VoucherifyLoyaltyProvider({
@@ -415,6 +455,8 @@ function createLoyaltyProvider(
       timeoutMs: config.loyalty.timeoutMs,
       maxRetries: config.loyalty.maxRetries,
       breaker,
+      budget,
+      clock,
     });
   }
   return new MemoryLoyaltyProvider();
@@ -509,4 +551,16 @@ function setRateLimitHeaders(
   reply.header("ratelimit-limit", String(capacity));
   reply.header("ratelimit-remaining", String(result.remaining));
   reply.header("ratelimit-reset", String(result.retryAfterSeconds));
+}
+
+/** Stałe komunikaty dla błędów spoza HttpError — nigdy nie ujawniają przyczyny. */
+const GENERIC_MESSAGES = {
+  VALIDATION_ERROR: "Nieprawidłowe dane wejściowe.",
+  NOT_FOUND: "Nie znaleziono zasobu.",
+  INTERNAL_ERROR: "Wystąpił błąd serwera. Spróbuj ponownie za chwilę.",
+} as const;
+
+/** Jedna koperta błędu dla całego API: kod dla programu, komunikat dla człowieka. */
+function errorBody(code: string, message: string, retryAfter?: number): ApiError {
+  return retryAfter === undefined ? { error: code, message } : { error: code, message, retryAfter };
 }

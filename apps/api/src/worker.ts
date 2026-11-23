@@ -6,8 +6,9 @@ import {
 import type { BookingService } from "./booking";
 import type { EventCatalog } from "./catalog";
 import type { AppConfig } from "./config";
-import type { JobQueue, JobRecord } from "./jobs";
-import type { LoyaltyService } from "./loyalty";
+import { type JobQueue, type JobRecord, REFUND_POINTS_TASK, SEND_TICKET_EMAIL_TASK } from "./jobs";
+import { LoyaltyThrottledError, type LoyaltyService } from "./loyalty";
+import { LoyaltyUnavailableError } from "./errors";
 import { MailDeliveryError, type Mailer, type TicketMail } from "./mail";
 import { CircuitBreaker, CircuitOpenError, withRetry } from "./resilience";
 
@@ -74,7 +75,16 @@ export class TicketMailWorker {
     this.lastRunAt = new Date(this.dependencies.clock()).toISOString();
 
     try {
-      if (job.task !== "send-ticket-email") {
+      if (job.task === REFUND_POINTS_TASK) {
+        // Zaległy zwrot punktów: tylko Voucherify, bez maila. Błąd idzie do wspólnej
+        // obsługi niżej — backoff, czekanie na limit wywołań albo DLQ w /lab.
+        const refund = readRefundInput(job);
+        await this.dependencies.loyalty.awardPoints(refund.email, refund.points);
+        queue.ack(job.id);
+        this.processed += 1;
+        return true;
+      }
+      if (job.task !== SEND_TICKET_EMAIL_TASK) {
         throw new UnsupportedJobError(`Nieznane zadanie: ${job.task}`);
       }
       const message = this.compose(job);
@@ -112,11 +122,16 @@ export class TicketMailWorker {
         error instanceof MailDeliveryError && !error.retryable
           ? true
           : error instanceof MissingReservationError || error instanceof UnsupportedJobError;
+      // Wyczerpany budżet Voucherify albo 429: punkty czekają na limit (do godziny),
+      // a nie lądują w DLQ po kilku szybkich próbach.
+      const throttled =
+        error instanceof LoyaltyUnavailableError && error.cause instanceof LoyaltyThrottledError;
       const result = queue.fail(job.id, error, {
         maxAttempts: config.worker.maxAttempts,
         baseBackoffMs: config.worker.baseBackoffMs,
         maxBackoffMs: config.worker.maxBackoffMs,
         permanent,
+        ...(throttled ? { deferMs: (error.retryAfter ?? 60) * 1000 } : {}),
       });
 
       this.failed += 1;
@@ -168,7 +183,8 @@ export class TicketMailWorker {
       departureTime: event.departureTime,
       seatLabel: formatSeatLabel(reservation.seatId),
       pointsUsed: status.pointsUsed,
-      pointsEarned: status.pointsEarned,
+      // Job powstaje dopiero po opłaceniu, więc pole jest; `?? 0` tylko dla typu.
+      pointsEarned: status.pointsEarned ?? 0,
     });
   }
 
@@ -190,6 +206,15 @@ export class TicketMailWorker {
 }
 
 class MissingReservationError extends Error {}
+
+/** Wejście joba zwrotu punktów; zły kształt to błąd trwały (od razu DLQ, bez prób). */
+function readRefundInput(job: JobRecord): { email: string; points: number } {
+  const { email, points } = job.input;
+  if (typeof email !== "string" || !email || !Number.isSafeInteger(points) || (points as number) <= 0) {
+    throw new UnsupportedJobError("Job zwrotu punktów bez poprawnego e-maila lub liczby punktów.");
+  }
+  return { email, points: points as number };
+}
 
 class UnsupportedJobError extends Error {}
 

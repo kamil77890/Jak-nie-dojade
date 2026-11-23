@@ -63,6 +63,42 @@ describe("konfiguracja wdrożenia", () => {
     expect(tuned.rateLimit.reservation).toEqual({ capacity: 80, refillPerSecond: 3 });
   });
 
+  it("budżet Voucherify, cache salda i limit odczytu salda da się dostroić zmiennymi", () => {
+    const defaults = loadConfig({});
+    expect(defaults.loyalty).toMatchObject({
+      hourlyBudget: 90,
+      reserveCritical: 20,
+      reserveCheckout: 20,
+      balanceCacheTtlMs: 30_000,
+      balanceStaleTtlMs: 600_000,
+    });
+    expect(defaults.rateLimit.loyalty).toEqual({ capacity: 10, refillPerSecond: 0.1 });
+
+    const tuned = loadConfig({
+      VOUCHERIFY_HOURLY_BUDGET: "60",
+      VOUCHERIFY_RESERVE_CRITICAL: "10",
+      VOUCHERIFY_RESERVE_CHECKOUT: "5",
+      LOYALTY_BALANCE_CACHE_SECONDS: "45",
+      LOYALTY_BALANCE_STALE_SECONDS: "0",
+      RATE_LIMIT_LOYALTY_CAPACITY: "4",
+      RATE_LIMIT_LOYALTY_PER_MINUTE: "12",
+    });
+    expect(tuned.loyalty).toMatchObject({
+      hourlyBudget: 60,
+      reserveCritical: 10,
+      reserveCheckout: 5,
+      balanceCacheTtlMs: 45_000,
+      balanceStaleTtlMs: 0,
+    });
+    expect(tuned.rateLimit.loyalty).toEqual({ capacity: 4, refillPerSecond: 0.2 });
+
+    const warnings = configWarnings(
+      loadConfig({ ...PAYMENTS_ENV, VOUCHERIFY_HOURLY_BUDGET: "120", VOUCHERIFY_RESERVE_CRITICAL: "130" }),
+    ).join(" ");
+    expect(warnings).toContain("odczyty salda zawsze dostaną 503");
+    expect(warnings).toContain("przekracza limit Sandboxa");
+  });
+
   it("ostrzega przy obu zmiennych TTL, TRUST_PROXY=true i otwartym ops na produkcji", () => {
     expect(configWarnings(loadConfig({ ...PAYMENTS_ENV, RESERVATION_TTL_MINUTES: "2" }))).toEqual([]);
 
@@ -133,7 +169,7 @@ describe("zakup z pustym body JSON", () => {
     });
     // Body jest poprawnie puste; odmowa wynika z braku płatności (Etap II), nie z parsera.
     expect(purchase.statusCode).toBe(402);
-    expect(purchase.json()).toEqual({ error: "PAYMENT_REQUIRED" });
+    expect(purchase.json()).toEqual({ error: "PAYMENT_REQUIRED", message: expect.any(String) });
 
     // Zły JSON dalej jest odmową 400, a pusta rezerwacja — błędem walidacji.
     const broken = await ctx.app.inject({
@@ -149,7 +185,7 @@ describe("zakup z pustym body JSON", () => {
       headers: { "content-type": "application/json" },
     });
     expect(empty.statusCode).toBe(400);
-    expect(empty.json()).toEqual({ error: "VALIDATION_ERROR" });
+    expect(empty.json()).toEqual({ error: "VALIDATION_ERROR", message: expect.any(String) });
   });
 });
 
@@ -159,7 +195,7 @@ describe("panel ops z OPS_TOKEN", () => {
 
     const none = await ctx.app.inject({ method: "GET", url: "/api/ops/jobs" });
     expect(none.statusCode).toBe(401);
-    expect(none.json()).toEqual({ error: "UNAUTHORIZED" });
+    expect(none.json()).toEqual({ error: "UNAUTHORIZED", message: expect.any(String) });
 
     const wrong = await ctx.app.inject({
       method: "GET",
@@ -221,12 +257,12 @@ describe("serwowanie zbudowanego frontendu", () => {
 
     const missingAsset = await ctx.app.inject({ method: "GET", url: "/assets/nie-ma.js" });
     expect(missingAsset.statusCode).toBe(404);
-    expect(missingAsset.json()).toEqual({ error: "NOT_FOUND" });
+    expect(missingAsset.json()).toEqual({ error: "NOT_FOUND", message: expect.any(String) });
 
     for (const url of ["/api/nie-ma", "/api/events/nie-ma/costam", "/api"]) {
       const api = await ctx.app.inject({ method: "GET", url });
       expect(api.statusCode, url).toBe(404);
-      expect(api.json()).toEqual({ error: "NOT_FOUND" });
+      expect(api.json()).toEqual({ error: "NOT_FOUND", message: expect.any(String) });
     }
 
     const post = await ctx.app.inject({ method: "POST", url: "/lab" });
@@ -252,7 +288,7 @@ describe("serwowanie zbudowanego frontendu", () => {
 
     const missing = await ctx.app.inject({ method: "GET", url: "/api/events/nie-ma-takiego" });
     expect(missing.statusCode).toBe(404);
-    expect(missing.json()).toEqual({ error: "EVENT_NOT_FOUND" });
+    expect(missing.json()).toEqual({ error: "EVENT_NOT_FOUND", message: expect.any(String) });
 
     const payload = reservationPayload();
     expect((await ctx.app.inject({ method: "POST", url: "/api/reservations", payload })).statusCode).toBe(201);
@@ -263,14 +299,14 @@ describe("serwowanie zbudowanego frontendu", () => {
     });
     expect(limited.statusCode).toBe(429);
     expect(limited.headers["retry-after"]).toBe("60");
-    expect(limited.json()).toEqual({ error: "RATE_LIMITED", retryAfter: 60 });
+    expect(limited.json()).toEqual({ error: "RATE_LIMITED", message: expect.any(String), retryAfter: 60 });
   });
 
   it("bez zbudowanego frontendu nieznane ścieżki to JSON 404", async () => {
     ctx = await createTestContext();
     const response = await ctx.app.inject({ method: "GET", url: "/lab" });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: "NOT_FOUND" });
+    expect(response.json()).toEqual({ error: "NOT_FOUND", message: expect.any(String) });
   });
 
   it("SERVE_WEB=false i katalog bez index.html wyłączają serwowanie", () => {

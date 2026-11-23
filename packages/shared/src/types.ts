@@ -80,15 +80,19 @@ export interface CheckoutResponse {
 /** Status rezerwacji widziany przez klienta w Etapie II. */
 export type PaymentStatus = "held" | "paid" | "expired";
 
-/** `GET /api/reservations/:id`. `code` jest tylko przy `paid`. */
+/** `GET /api/reservations/:id`. `code` i `pointsEarned` są tylko przy `paid`. */
 export interface ReservationStatusResponse {
   status: PaymentStatus;
   amount: number;
   expiresAt: string;
-  /** Ile punktów klient wydał na ten zakup (0, dopóki nie opłacono). */
+  /**
+   * Przy `paid` — ile punktów klient wydał na ten zakup. Wcześniej — ile punktów jest
+   * pobranych z karty na sesje płatności tej rezerwacji i jeszcze nie wróciło
+   * (0 bez punktów albo po ich zwrocie).
+   */
   pointsUsed: number;
-  /** Ile punktów naliczono po opłaceniu; 0 przed płatnością. */
-  pointsEarned: number;
+  /** Ile punktów naliczono za zakup — tylko przy `paid` (wcześniej pole nie występuje). */
+  pointsEarned?: number;
   code?: string;
 }
 
@@ -148,7 +152,10 @@ export type ApiErrorCode =
   | "INTERNAL_ERROR";
 
 export interface ApiError {
+  /** Stały kod do obsługi w programie (np. `INSUFFICIENT_POINTS`). */
   error: ApiErrorCode | string;
+  /** Komunikat po polsku dla człowieka; nigdy nie zawiera szczegółów technicznych. */
+  message: string;
   retryAfter?: number;
 }
 
@@ -238,6 +245,36 @@ export interface OpsStatus {
     mode: string;
     sent: number;
     lastModeChangeAt: string | null;
+  };
+  /** Etap III: dostawca punktów, budżet wywołań Voucherify i cache salda. */
+  loyalty?: LoyaltyOpsSnapshot;
+}
+
+/** Budżet wywołań zewnętrznego API w oknie przesuwnym (Voucherify Sandbox: 100/h). */
+export interface CallBudgetSnapshot {
+  /** Nasz limit w oknie (z zapasem względem limitu dostawcy). */
+  limit: number;
+  windowSeconds: number;
+  /** Wywołania w bieżącym oknie. */
+  used: number;
+  /** Progi priorytetów: odczyt salda < checkout < operacje krytyczne (= limit). */
+  readCap: number;
+  checkoutCap: number;
+  /** Do kiedy dostawca kazał czekać (429 + Retry-After); null = nie blokuje. */
+  blockedUntil: string | null;
+  /** Ile wywołań odmówiliśmy, zanim poszły do dostawcy. */
+  denied: number;
+}
+
+export interface LoyaltyOpsSnapshot {
+  provider: "voucherify" | "memory";
+  budget: CallBudgetSnapshot;
+  cache: {
+    entries: number;
+    ttlSeconds: number;
+    hits: number;
+    misses: number;
+    staleServed: number;
   };
 }
 

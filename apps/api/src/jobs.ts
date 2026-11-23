@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { JobState, JobView, QueueStats } from "@pas/shared";
 import { type Db, transaction } from "./db";
 
+/** Mail z biletem + naliczenie punktów za zakup (Etap I–III). */
+export const SEND_TICKET_EMAIL_TASK = "send-ticket-email";
+/** Zwrot punktów, którego nie udało się zrobić od razu (Stripe i Voucherify padły naraz). */
+export const REFUND_POINTS_TASK = "refund-points";
+
 export interface JobInput {
   [key: string]: unknown;
 }
@@ -35,6 +40,12 @@ export interface FailOptions {
   baseBackoffMs: number;
   maxBackoffMs: number;
   permanent?: boolean;
+  /**
+   * Zależność kazała czekać (limit wywołań, Retry-After): job wraca najwcześniej
+   * po tym czasie, a próba nie liczy się do `maxAttempts` — to nie awaria, tylko
+   * kolejka do limitu, więc nie może zepchnąć joba do DLQ.
+   */
+  deferMs?: number;
 }
 
 export type FailResult = "retry" | "dlq";
@@ -125,6 +136,17 @@ export class JobQueue {
     if (!row) return "dlq";
 
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 1_000);
+
+    if (options.deferMs !== undefined && options.permanent !== true) {
+      this.db
+        .prepare(
+          `UPDATE jobs SET visible_at = ?, last_error = ?, total_tried = MAX(0, total_tried - 1)
+           WHERE id = ?`,
+        )
+        .run(this.clock() + Math.max(0, options.deferMs), message, jobId);
+      return "retry";
+    }
+
     const tried = Number(row.total_tried);
     const toDlq = options.permanent === true || tried >= options.maxAttempts;
 

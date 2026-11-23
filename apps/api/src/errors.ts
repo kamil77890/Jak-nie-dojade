@@ -95,12 +95,17 @@ export class PointsLimitExceededError extends HttpError {
 }
 
 export class LoyaltyUnavailableError extends HttpError {
-  constructor(cause?: unknown) {
+  /**
+   * Przyczyna (np. treść błędu Voucherify) trafia do logu serwera, nigdy do klienta.
+   * `retryAfter` niesie realny czas do odblokowania, gdy wyczerpał się budżet wywołań
+   * albo Voucherify odpowiedział 429 z `Retry-After`.
+   */
+  constructor(cause?: unknown, retryAfter = 5) {
     super(
       503,
       "LOYALTY_UNAVAILABLE",
       "Program lojalnościowy chwilowo nie działa. Spróbuj za chwilę.",
-      5,
+      Math.max(1, Math.ceil(retryAfter)),
     );
     if (cause !== undefined) this.cause = cause;
   }

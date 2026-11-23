@@ -4,8 +4,9 @@ import { Link, useNavigate, useParams } from "react-router";
 import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
 import { ArrowLeft } from "../components/Icons";
 import { TripSummary } from "../components/TripSummary";
-import { createReservation, getEvent, getLoyalty } from "../lib/api";
+import { createReservation, getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
+import { loadLoyaltyBalance, normalizeLoyaltyEmail, peekLoyaltyBalance } from "../lib/loyalty";
 import { toSummary, trainLabel } from "../lib/format";
 import { EASE, gsap, useGsap } from "../lib/motion";
 import { loadPassenger, savePassenger, saveReservation } from "../lib/session";
@@ -32,7 +33,12 @@ export function ReservePage() {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [serverError, setServerError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [balance, setBalance] = useState<{ email: string; points: number } | null>(null);
+  const [balance, setBalance] = useState<{ email: string; points: number } | null>(() => {
+    const email = normalizeLoyaltyEmail(passenger.email);
+    const points = email ? peekLoyaltyBalance(email) : null;
+    return email && points !== null ? { email, points } : null;
+  });
+  const mounted = useRef(true);
   const ttl = formatTtl(useReservationTtl());
 
   useDocumentTitle("Rezerwacja miejsca");
@@ -72,28 +78,25 @@ export function ReservePage() {
     [Boolean(event), seatTaken],
   );
 
-  // Karta A: po wpisaniu e-maila pokazujemy saldo (nowy klient: 1000 punktów).
+  // Karta A: saldo pokazujemy dla „skończonego” e-maila — po wyjściu z pola, a nie
+  // przy każdej literze. Literówka w trakcie pisania (jan@wp.pl → jan@wp.pl.com) nie
+  // wysyła requestu; ten sam e-mail nie jest pytany drugi raz (wynik w sessionStorage).
+  function checkBalance(raw: string) {
+    const email = normalizeLoyaltyEmail(raw);
+    if (!email || balance?.email === email) return;
+    void loadLoyaltyBalance(email).then((points) => {
+      if (mounted.current && points !== null) setBalance({ email, points });
+    });
+  }
+
   useEffect(() => {
-    const email = passenger.email.trim().toLowerCase();
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
-      setBalance(null);
-      return;
-    }
-    let alive = true;
-    const timer = setTimeout(() => {
-      getLoyalty(email)
-        .then((result) => {
-          if (alive) setBalance({ email, points: result.points });
-        })
-        .catch(() => {
-          if (alive) setBalance(null);
-        });
-    }, 450);
+    mounted.current = true;
+    // E-mail zapamiętany z poprzedniego zakupu jest już kompletny — pytamy raz na starcie.
+    checkBalance(passenger.email);
     return () => {
-      alive = false;
-      clearTimeout(timer);
+      mounted.current = false;
     };
-  }, [passenger.email]);
+  }, []);
 
   const seat = event?.wagons.flatMap((wagon) => wagon.seats).find((item) => item.id === seatId);
 
@@ -287,6 +290,7 @@ export function ReservePage() {
                     setPassenger((current) => ({ ...current, email: changeEvent.target.value }));
                     setFieldErrors((current) => ({ ...current, email: undefined }));
                   }}
+                  onBlur={(blurEvent) => checkBalance(blurEvent.target.value)}
                   aria-invalid={Boolean(fieldErrors.email)}
                   aria-describedby={fieldErrors.email ? "email-error" : undefined}
                   placeholder="anna@example.com"
