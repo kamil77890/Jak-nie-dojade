@@ -13,6 +13,7 @@ import {
   type TestContext,
 } from "./helpers";
 import { LoyaltyProviderError, type LoyaltyProvider } from "../src/loyalty";
+import { seedAccount } from "./loyalty-helpers";
 
 let ctx: TestContext;
 
@@ -84,10 +85,19 @@ describe("karta A — saldo punktów (Voucherify)", () => {
       },
     };
     ctx = await createTestContext({ loyaltyProvider: broken });
+    // Konto z kartą — saldo trzeba przeczytać z Voucherify (nowy e-mail go nie potrzebuje).
+    seedAccount(ctx, "anna@example.com", "CARD-anna");
 
     const response = await loyalty("anna@example.com");
     expect(response.statusCode).toBe(503);
-    expect(response.json()).toMatchObject({ error: "LOYALTY_UNAVAILABLE" });
+    expect(response.headers["retry-after"]).toBe("5");
+    // Nic wewnętrznego nie wycieka: tylko kod i czas ponowienia.
+    expect(response.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", retryAfter: 5 });
+
+    // E-mail, który nic nie kupił, ma 1000 punktów bez pytania Voucherify — nawet w awarii.
+    const fresh = await loyalty("nowy@example.com");
+    expect(fresh.statusCode).toBe(200);
+    expect(fresh.json<LoyaltyResponse>().points).toBe(1000);
   });
 });
 

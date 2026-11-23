@@ -98,6 +98,9 @@ To jest graceful degradation: kasa działa dalej w okrojonej wersji (bez potwier
 | globalny `/api` | 300 żetonów | 10/s | IP |
 | `POST /api/reservations` | 60 | 2/s | IP |
 | `POST /api/reservations/:id/purchase` | 40 | 2/s | IP |
+| `GET /api/loyalty` (Etap III) | 10 | 6/min | IP |
+
+Od Etapu III dochodzi też limit **po naszej stronie zależności**: Voucherify Sandbox przyjmuje 100 wywołań/h, więc `CallBudget` (`apps/api/src/resilience.ts`) liczy wywołania w oknie przesuwnym 1 h i odmawia według priorytetu (odczyt salda → checkout → zwrot/naliczenie). `429` od Voucherify nie jest ponawiane — `Retry-After` blokuje budżet. Szczegóły: `CONTRACT.md` §11.6 i `docs/ETAP_III_STATUS.md`.
 
 Token bucket pozwala na krótki skok do pojemności wiadra, ale stały zalew ogranicza tempo dopełniania. Po przekroczeniu:
 

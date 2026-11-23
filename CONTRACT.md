@@ -228,7 +228,7 @@ Te endpointy istnieją dla demo praktyk E04–E06 i panelu `/lab`. Nie są potrz
 | Endpoint | Rola |
 | --- | --- |
 | `GET /api/health` | healthcheck poza limitem i load sheddingiem; `{ ok, now, reservationTtlSeconds }` |
-| `GET /api/ops/status` | bezpiecznik, kolejka, pule, liczniki, tryb mocka poczty |
+| `GET /api/ops/status` | bezpiecznik, kolejka, pule, liczniki, tryb mocka poczty; od Etapu III `loyalty`: dostawca, budżet wywołań Voucherify (`used`, progi, `blockedUntil`, `denied`) i statystyki cache salda |
 | `GET /api/ops/snapshot` | status + joby + skrzynka w jednym requeście |
 | `GET /api/ops/jobs?limit=25` | ostatnie joby |
 | `POST /api/ops/jobs/:id/retry` | przywrócenie joba z DLQ |
@@ -363,10 +363,11 @@ Sekcja uzupełnia §3 (nowy endpoint i opcjonalne body checkoutu) i §6 (nowe ko
 | # | Decyzja | Wartość |
 | --- | --- | --- |
 | 11.01 | konto punktowe | przypisane do e-maila, bez logowania; e-mail normalizowany do małych liter |
-| 11.02 | bonus powitalny | nowy klient dostaje **1000 punktów** przy pierwszym odczycie salda; powtórka nie dubluje bonusu |
+| 11.02 | bonus powitalny | e-mail, który jeszcze nic nie kupił, ma **1000 punktów**; kartę w Voucherify i bonus zakładamy leniwie przy pierwszym zapisie punktów (pobranie w checkoucie albo naliczenie po zakupie) — sam odczyt salda niczego nie zakłada; bonus przyznawany dokładnie raz |
 | 11.03 | naliczanie | **10 punktów za każdy pełny złoty zapłacony kartą**; punkty za zakup dopisuje worker po potwierdzeniu płatności |
 | 11.04 | płatność punktami | 1 punkt = 1 grosz; maksymalnie **połowa ceny biletu** (`floor(amount / 2)`) |
-| 11.05 | saldo | źródłem prawdy jest **Voucherify**; SQLite trzyma tylko mapowanie e-mail → karta i znaczniki naliczeń |
+| 11.05 | saldo | źródłem prawdy jest **Voucherify**; SQLite trzyma tylko mapowanie e-mail → karta i znaczniki naliczeń; krótki cache salda w pamięci procesu (domyślnie 30 s) to wyłącznie optymalizacja odczytu |
+| 11.08 | limit Voucherify | Sandbox przyjmuje **najwyżej 100 wywołań API na godzinę**; API pilnuje własnego budżetu (domyślnie 90/h) z priorytetami: odczyt salda < checkout < zwrot/naliczenie punktów |
 | 11.06 | brak punktów / za dużo | odmowa `4xx` z kodem i komunikatem; żadnych częściowych zapisów |
 | 11.07 | mail | bilet + podsumowanie: ile kartą, ile punktami, ile punktów zebrano — przez **Resend** |
 
@@ -380,9 +381,13 @@ Sekcja uzupełnia §3 (nowy endpoint i opcjonalne body checkoutu) i §6 (nowe ko
 { "email": "anna@example.com", "points": 1000 }
 ```
 
-- Nowy e-mail → konto w Voucherify + 1000 punktów → `200`.
-- Niepoprawny e-mail → `400 VALIDATION_ERROR`.
-- Brak odpowiedzi Voucherify → `503 LOYALTY_UNAVAILABLE` (z `Retry-After`).
+- E-mail normalizowany: `trim` + małe litery; maks. 160 znaków; format jak przy rezerwacji.
+- E-mail bez karty (nic jeszcze nie kupił) → `200` z `points: 1000` **bez wywołania Voucherify** i bez zakładania karty (literówka w trakcie pisania nie tworzy konta).
+- E-mail z kartą → saldo z Voucherify; powtórka w ciągu `LOYALTY_BALANCE_CACHE_SECONDS` (30 s) idzie z cache, a każda nasza korekta salda od razu ten cache nadpisuje.
+- Brak, pusty, powtórzony (`?email=a&email=b`), za długi albo niepoprawny e-mail → `400 VALIDATION_ERROR`.
+- Za dużo odczytów z jednego IP (domyślnie 10 na start, potem 6/min) → `429 RATE_LIMITED` z `Retry-After`; odpowiedź `400` oddaje żeton.
+- Voucherify niedostępny, odpowiedział `429` albo wyczerpał się budżet wywołań → `503 LOYALTY_UNAVAILABLE` z `Retry-After` (realny czas do zwolnienia budżetu albo z nagłówka Voucherify; inaczej 5 s). Jeśli mamy odczyt nie starszy niż `LOYALTY_BALANCE_STALE_SECONDS` (10 min), odpowiedź to `200` z tym saldem.
+- Odpowiedź `5xx` niesie tylko kopertę `{ "error", "retryAfter" }` — treść błędu Voucherify trafia wyłącznie do logu serwera.
 
 #### `GET /api/reservations/:id`
 
@@ -431,13 +436,14 @@ Body jest opcjonalne:
   4. punkty starej sesji wracają na kartę (dokładnie raz, §11.3); Voucherify niedostępny → `503 LOYALTY_UNAVAILABLE` — punkty odda webhook `checkout.session.expired` (Stripe wysyła go także dla sesji wygaszonej przez API) albo następny checkout z punktami;
   5. powstaje nowa sesja na nową kwotę i z nowym `url`.
 - Klucz Stripe'a dla sesji: `pas-checkout-<reservationId>-<Idempotency-Key>` dla pierwszej sesji rezerwacji, `…-<Idempotency-Key>.<n>` dla `n`-tej kolejnej (Stripe pamięta klucz 24 h i oddałby wygaszoną sesję), plus `-p<points>`, gdy `points > 0` (ponowienie po błędzie Stripe'a z inną liczbą punktów to inne parametry). Ten sam klucz klienta + te same punkty + brak nowej sesji w międzyczasie = ten sam klucz Stripe'a.
-- Awaria Voucherify przy sprawdzaniu/pobieraniu punktów → `503 LOYALTY_UNAVAILABLE` z `Retry-After`. Punkty pobrane przed błędem Stripe'a wracają na kartę. Checkout **bez punktów** nie rozmawia z Voucherify, więc działa także przy jego awarii.
+- Awaria Voucherify przy sprawdzaniu/pobieraniu punktów (także wyczerpany budżet checkoutu albo `429` Voucherify) → `503 LOYALTY_UNAVAILABLE` z `Retry-After`. Punkty pobrane przed błędem Stripe'a wracają na kartę. Checkout **bez punktów** nie rozmawia z Voucherify, więc działa także przy jego awarii.
+- Wstępne sprawdzenie salda może użyć świeżego cache (≤ 30 s): samo pobranie jest atomowe w Voucherify, więc zawyżone saldo w cache kończy się tym samym `409 INSUFFICIENT_POINTS` bez żadnego zapisu. Stary cache (po TTL) nigdy nie jest używany w checkoucie.
 
 **Dlaczego wygaszenie i nowa sesja, a nie `409`.** Wcześniej nowa liczba punktów była po cichu ignorowana: UI pokazywało „Zapłać 85 zł”, a Stripe pobierał 79 zł. Jawna odmowa `409` byłaby bezpieczna, ale zostawiałaby klienta bez wyjścia aż do wygaśnięcia sesji (TTL rezerwacji + 31 min — dłużej niż sama rezerwacja), bo frontend trzyma jeden `Idempotency-Key` na rezerwację. Wygaszenie jest bezpieczne, bo Stripe gwarantuje, że wygaszonej sesji nie da się już opłacić, a opłaconej nie da się wygasić — dostajemy jednoznaczną odpowiedź, którą sesję klient może jeszcze zapłacić. Wszystkie kroki są idempotentne, a żądania checkoutu jednej rezerwacji są szeregowane (blokada w procesie), więc dwa kliknięcia z różnymi punktami nie zostawią dwóch otwartych sesji.
 
 ### 11.3 Zapis punktów (SQLite + Voucherify)
 
-- `loyalty_accounts(email PRIMARY KEY, member_id, welcomed_at, created_at)` — e-mail → kod karty w Voucherify; bonus powitalny tylko przy tworzeniu wiersza.
+- `loyalty_accounts(email PRIMARY KEY, member_id, welcomed_at, created_at, welcome_pending)` — e-mail → kod karty w Voucherify. Wiersz powstaje przy pierwszym zapisie punktów. `welcome_pending`: `0` bonus przyznany (albo karta już miała historię punktów — wtedy bonus był dany wcześniej), `1` bonus należny, `2` próba z niepewnym wynikiem (timeout) — przed ponowieniem sprawdzamy saldo karty, żeby nie zdublować bonusu.
 - `reservations.points_used`, `reservations.points_earned`, `reservations.points_awarded_at` — podsumowanie zakupu i znacznik, że punkty już poszły do Voucherify.
 - `checkout_sessions.points_used` — ile punktów obniżyło tę sesję; potrzebne do zwrotu i do webhooka.
 - `checkout_sessions.points_refunded_at` — kiedy punkty tej sesji wróciły na kartę. To jedyny mechanizm zwrotu punktów (`CheckoutService.releaseSessionPoints`), wspólny dla wygaśnięcia sesji, zwrotu płatności w webhooku i zmiany liczby punktów:
@@ -447,11 +453,11 @@ Body jest opcjonalne:
 
   Równoległe wywołania dla tej samej sesji w jednym procesie czekają na ten sam wynik. `confirmPayment` w tej samej bazie odmawia wydania biletu z sesji, której punkty już wróciły (zwrot płatności, powód `points_returned`) — zniżka i zwrot punktów nigdy nie występują razem.
 - Migracja: kolumna `points_refunded_at` jest dodawana automatycznie; wygasłe sesje z punktami sprzed migracji dostają znacznik (stary kod oddawał punkty przy `open → expired`).
-- Saldo **nie jest** kopiowane do bazy. Każdy odczyt `GET /api/loyalty` pyta Voucherify.
+- Saldo **nie jest** kopiowane do bazy. Odczyt `GET /api/loyalty` dla e-maila z kartą pyta Voucherify albo bierze krótki cache w pamięci procesu (nie w SQLite). Cache to tylko optymalizacja: saldo może zmienić się poza nami (np. korekta marketingu w panelu Voucherify), dlatego TTL jest krótki.
 
 ### 11.4 Przepływ
 
-1. Ekran B: po wpisaniu e-maila `GET /api/loyalty` pokazuje saldo (nowy klient: 1000).
+1. Ekran B: po wyjściu z pola e-mail (poprawny format) `GET /api/loyalty` pokazuje saldo (nowy klient: 1000) — raz na e-mail; ekran płatności używa tego samego wyniku z `sessionStorage`. Przy `429`/`503` UI czeka `Retry-After` i nie pokazuje pola punktów; płatność kartą działa.
 2. Ekran B: klient podaje liczbę punktów; UI ogranicza ją do `min(saldo, floor(cena/2))`.
 3. Checkout: walidacja → pobranie punktów (jeśli > 0) → sesja Stripe na kwotę po punktach.
 4. Webhook `checkout.session.completed`: zapis `pointsUsed` i `pointsEarned = floor(kwota_kartą / 100) * 10` w jednej transakcji z kodem biletu.
@@ -466,7 +472,7 @@ Body jest opcjonalne:
 | --- | --- | --- |
 | `409` | `POINTS_LIMIT_EXCEEDED` | punkty > połowa ceny biletu |
 | `409` | `INSUFFICIENT_POINTS` | saldo mniejsze niż liczba punktów |
-| `503` | `LOYALTY_UNAVAILABLE` | Voucherify wolny/niedostępny/odrzucił żądanie; nagłówek `Retry-After: 5` |
+| `503` | `LOYALTY_UNAVAILABLE` | Voucherify wolny/niedostępny/odrzucił żądanie, odpowiedział `429` albo wyczerpał się nasz budżet wywołań; zawsze z `Retry-After` |
 
 Pozostałe odpowiedzi checkoutu z punktami używają kodów z §10.1 (`400 VALIDATION_ERROR`, `400 IDEMPOTENCY_KEY_REQUIRED`, `404 RESERVATION_NOT_FOUND`, `409 RESERVATION_EXPIRED`, `409 RESERVATION_PAID`, `503 PAYMENTS_UNAVAILABLE`). Koperta błędu się nie zmienia: `{ "error": "KOD", "retryAfter"? }`; komunikat po polsku dobiera UI po kodzie (`apps/web/src/lib/errors.ts`). Odpowiedzi `5xx` nie zawierają przyczyny (ta trafia do logu serwera); nieobsłużony błąd to zawsze `500 { "error": "INTERNAL_ERROR" }`.
 
@@ -476,7 +482,11 @@ Webhook: `400 INVALID_SIGNATURE`; `500`, gdy nie udał się zwrot pieniędzy; `5
 
 | Zagrożenie | Zabezpieczenie |
 | --- | --- |
-| Voucherify wolny albo niedostępny | timeout (`VOUCHERIFY_TIMEOUT_MS`, 5 s), retry z backoffem (`VOUCHERIFY_MAX_RETRIES`), osobny bezpiecznik (5 błędów → 30 s), `503 LOYALTY_UNAVAILABLE`; płatność kartą bez punktów działa dalej |
+| Voucherify wolny albo niedostępny | timeout (`VOUCHERIFY_TIMEOUT_MS`, 5 s), retry z backoffem (`VOUCHERIFY_MAX_RETRIES`) tylko dla odczytów i zakładania karty — korekta salda nie jest ponawiana automatycznie (mogłaby pobrać punkty dwa razy), osobny bezpiecznik (5 błędów → 30 s; otwarty nie zużywa limitu), `503 LOYALTY_UNAVAILABLE`; płatność kartą bez punktów działa dalej |
+| **limit Voucherify Sandbox: 100 wywołań API/h** | własny budżet w oknie przesuwnym (`VOUCHERIFY_HOURLY_BUDGET`, 90 — zapas na ręczne wywołania), liczony per wywołanie (także ponowienia); priorytety: odczyt salda kończy się pierwszy (`budżet − rezerwy`, domyślnie 50), checkout ma rezerwę (`VOUCHERIFY_RESERVE_CHECKOUT`, 20), zwrot i naliczenie punktów — ostatnią (`VOUCHERIFY_RESERVE_CRITICAL`, 20). Po przekroczeniu: `503 LOYALTY_UNAVAILABLE` z `Retry-After` do zwolnienia miejsca (albo niedawne saldo z cache); naliczenie w workerze czeka na okno bez zużywania prób (nie trafia do DLQ). Stan budżetu: `GET /api/ops/status` → `loyalty.budget`. Budżet jest w pamięci procesu — przy kilku instancjach trzeba go podzielić albo przenieść do Redisa |
+| `429` od Voucherify | bez natychmiastowego ponowienia; `Retry-After` (sekundy albo data HTTP, bez nagłówka 60 s, maks. 1 h) blokuje wszystkie wywołania do Voucherify i trafia do klienta jako `Retry-After` przy `503`; `429` nie liczy się jako awaria bezpiecznika |
+| zużycie limitu przez odczyty salda (skrypt, literówki) | odczyt salda e-maila bez karty nie woła Voucherify ani nie zakłada karty; cache salda 30 s; limit per IP na `GET /api/loyalty` (`RATE_LIMIT_LOYALTY_CAPACITY` 10, `RATE_LIMIT_LOYALTY_PER_MINUTE` 6) → `429 RATE_LIMITED`; UI pyta raz po wyjściu z pola e-mail i pamięta wynik |
+| fałszywe karty w Voucherify (literówki, cudze e-maile) | karta powstaje dopiero przy pierwszym zapisie punktów (zakup), nie przy odczycie salda |
 | punkty pobrane, ale Stripe odmówił | natychmiastowy zwrot punktów (`awardPoints`) przed odpowiedzią `503`; powtórka z tym samym kluczem |
 | podwójne kliknięcie / ponowienie checkoutu | `Idempotency-Key` + jedna otwarta sesja; punkty pobierane tylko przy tworzeniu sesji |
 | porzucona sesja Stripe | webhook `checkout.session.expired` zwraca punkty; powtórka zdarzenia nie dubluje zwrotu |
@@ -494,13 +504,15 @@ Webhook: `400 INVALID_SIGNATURE`; `500`, gdy nie udał się zwrot pieniędzy; `5
 | fałszywe konto na cudzy e-mail | konto bez logowania (jak w Etapie I); punkty są przyjazne, nie pieniężne — brak wypłaty, tylko zniżka do połowy ceny |
 | wyciek kluczy Voucherify | `VOUCHERIFY_APP_ID` i `VOUCHERIFY_APP_TOKEN` tylko w env serwera; brak w bundlu i logach |
 | Resend niedostępny / limit | timeout (`RESEND_TIMEOUT_MS`), retry z backoffem i bezpiecznikiem; bilet jest ważny niezależnie od maila, status widać na stronie |
+| Resend Sandbox (bez zweryfikowanej domeny) wysyła tylko na adres właściciela konta i adresy testowe `delivered@resend.dev` / `bounced@resend.dev` | odmowa (`403`) to błąd trwały: job od razu w DLQ, bez ponowień; punkty za zakup są naliczane **przed** zgłoszeniem błędu maila, więc odmowa nie blokuje naliczenia (test). `bounced@resend.dev` Resend przyjmuje (`200`), a odbicie zgłasza później asynchronicznie (webhook, którego nie konsumujemy) — dla nas to wysłany mail; bilet i punkty są niezależne od doręczenia |
 | duplikat maila przy powtórce joba | `Idempotency-Key` = `job.id` w Resend |
 | podszycie się pod nadawcę / spam | domena nadawcy zweryfikowana w Resend (SPF/DKIM), `RESEND_FROM` tylko z env |
 | wyciek klucza Resend | klucz wyłącznie na serwerze; rotacja po ujawnieniu; brak w repo i frontendzie |
 
 ### 11.7 Kryteria akceptacji Etapu III
 
-- Nowy e-mail → `GET /api/loyalty` zwraca 1000 punktów; powtórka nie dubluje bonusu.
+- Nowy e-mail → `GET /api/loyalty` zwraca 1000 punktów bez wywołania Voucherify; pierwszy zakup zakłada kartę z bonusem dokładnie raz.
+- Zalew odczytów salda nie wyczerpuje limitu Voucherify potrzebnego na zakupy i zwroty punktów (`429` per IP, budżet z priorytetami, `503` z `Retry-After`).
 - Checkout z `points: 1000` dla biletu 89 zł tworzy sesję na 79 zł, a saldo spada o 1000.
 - Po opłaceniu status ma `pointsUsed: 1000` i `pointsEarned: 790`; worker dopisuje 790 punktów.
 - `points: 4451` przy cenie 89 zł → `409 POINTS_LIMIT_EXCEEDED`; `points: 2000` przy saldzie 1000 → `409 INSUFFICIENT_POINTS`.

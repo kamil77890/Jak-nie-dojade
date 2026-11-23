@@ -7,7 +7,8 @@ import type { BookingService } from "./booking";
 import type { EventCatalog } from "./catalog";
 import type { AppConfig } from "./config";
 import type { JobQueue, JobRecord } from "./jobs";
-import type { LoyaltyService } from "./loyalty";
+import { LoyaltyThrottledError, type LoyaltyService } from "./loyalty";
+import { LoyaltyUnavailableError } from "./errors";
 import { MailDeliveryError, type Mailer, type TicketMail } from "./mail";
 import { CircuitBreaker, CircuitOpenError, withRetry } from "./resilience";
 
@@ -112,11 +113,16 @@ export class TicketMailWorker {
         error instanceof MailDeliveryError && !error.retryable
           ? true
           : error instanceof MissingReservationError || error instanceof UnsupportedJobError;
+      // Wyczerpany budżet Voucherify albo 429: punkty czekają na limit (do godziny),
+      // a nie lądują w DLQ po kilku szybkich próbach.
+      const throttled =
+        error instanceof LoyaltyUnavailableError && error.cause instanceof LoyaltyThrottledError;
       const result = queue.fail(job.id, error, {
         maxAttempts: config.worker.maxAttempts,
         baseBackoffMs: config.worker.baseBackoffMs,
         maxBackoffMs: config.worker.maxBackoffMs,
         permanent,
+        ...(throttled ? { deferMs: (error.retryAfter ?? 60) * 1000 } : {}),
       });
 
       this.failed += 1;

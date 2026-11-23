@@ -63,6 +63,42 @@ describe("konfiguracja wdrożenia", () => {
     expect(tuned.rateLimit.reservation).toEqual({ capacity: 80, refillPerSecond: 3 });
   });
 
+  it("budżet Voucherify, cache salda i limit odczytu salda da się dostroić zmiennymi", () => {
+    const defaults = loadConfig({});
+    expect(defaults.loyalty).toMatchObject({
+      hourlyBudget: 90,
+      reserveCritical: 20,
+      reserveCheckout: 20,
+      balanceCacheTtlMs: 30_000,
+      balanceStaleTtlMs: 600_000,
+    });
+    expect(defaults.rateLimit.loyalty).toEqual({ capacity: 10, refillPerSecond: 0.1 });
+
+    const tuned = loadConfig({
+      VOUCHERIFY_HOURLY_BUDGET: "60",
+      VOUCHERIFY_RESERVE_CRITICAL: "10",
+      VOUCHERIFY_RESERVE_CHECKOUT: "5",
+      LOYALTY_BALANCE_CACHE_SECONDS: "45",
+      LOYALTY_BALANCE_STALE_SECONDS: "0",
+      RATE_LIMIT_LOYALTY_CAPACITY: "4",
+      RATE_LIMIT_LOYALTY_PER_MINUTE: "12",
+    });
+    expect(tuned.loyalty).toMatchObject({
+      hourlyBudget: 60,
+      reserveCritical: 10,
+      reserveCheckout: 5,
+      balanceCacheTtlMs: 45_000,
+      balanceStaleTtlMs: 0,
+    });
+    expect(tuned.rateLimit.loyalty).toEqual({ capacity: 4, refillPerSecond: 0.2 });
+
+    const warnings = configWarnings(
+      loadConfig({ ...PAYMENTS_ENV, VOUCHERIFY_HOURLY_BUDGET: "120", VOUCHERIFY_RESERVE_CRITICAL: "130" }),
+    ).join(" ");
+    expect(warnings).toContain("odczyty salda zawsze dostaną 503");
+    expect(warnings).toContain("przekracza limit Sandboxa");
+  });
+
   it("ostrzega przy obu zmiennych TTL, TRUST_PROXY=true i otwartym ops na produkcji", () => {
     expect(configWarnings(loadConfig({ ...PAYMENTS_ENV, RESERVATION_TTL_MINUTES: "2" }))).toEqual([]);
 

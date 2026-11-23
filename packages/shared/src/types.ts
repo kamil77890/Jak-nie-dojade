@@ -243,6 +243,36 @@ export interface OpsStatus {
     sent: number;
     lastModeChangeAt: string | null;
   };
+  /** Etap III: dostawca punktów, budżet wywołań Voucherify i cache salda. */
+  loyalty?: LoyaltyOpsSnapshot;
+}
+
+/** Budżet wywołań zewnętrznego API w oknie przesuwnym (Voucherify Sandbox: 100/h). */
+export interface CallBudgetSnapshot {
+  /** Nasz limit w oknie (z zapasem względem limitu dostawcy). */
+  limit: number;
+  windowSeconds: number;
+  /** Wywołania w bieżącym oknie. */
+  used: number;
+  /** Progi priorytetów: odczyt salda < checkout < operacje krytyczne (= limit). */
+  readCap: number;
+  checkoutCap: number;
+  /** Do kiedy dostawca kazał czekać (429 + Retry-After); null = nie blokuje. */
+  blockedUntil: string | null;
+  /** Ile wywołań odmówiliśmy, zanim poszły do dostawcy. */
+  denied: number;
+}
+
+export interface LoyaltyOpsSnapshot {
+  provider: "voucherify" | "memory";
+  budget: CallBudgetSnapshot;
+  cache: {
+    entries: number;
+    ttlSeconds: number;
+    hits: number;
+    misses: number;
+    staleServed: number;
+  };
 }
 
 export interface PoolSnapshot {

@@ -1,8 +1,9 @@
 import { formatPrice, type ReservationView } from "@pas/shared";
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
-import { ApiRequestError, getLoyalty, startCheckout } from "../lib/api";
+import { ApiRequestError, startCheckout } from "../lib/api";
 import { describeApiError, RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
+import { forgetLoyaltyBalance, loadLoyaltyBalance, peekLoyaltyBalance } from "../lib/loyalty";
 import { checkoutKey } from "../lib/session";
 import { ArrowRight, Mail, Shield } from "./Icons";
 
@@ -32,23 +33,21 @@ export function PurchasePanel({
   const [error, setError] = useState<string | null>(null);
 
   // Karta A/B: saldo pochodzi z Voucherify (przez API). Do połowy ceny można płacić punktami.
-  const [balance, setBalance] = useState<number | null>(null);
+  // Saldo pobrane już na ekranie rezerwacji bierzemy z sessionStorage — bez drugiego requestu.
+  const [balance, setBalance] = useState<number | null>(() => peekLoyaltyBalance(reservation.email));
   const [pointsRaw, setPointsRaw] = useState("0");
+  const [balanceVersion, setBalanceVersion] = useState(0);
 
   useEffect(() => {
     let alive = true;
-    getLoyalty(reservation.email)
-      .then((result) => {
-        if (alive) setBalance(result.points);
-      })
-      .catch(() => {
-        // Brak programu lojalnościowego nie blokuje płatności kartą.
-        if (alive) setBalance(null);
-      });
+    // null (429/503, brak programu) nie blokuje płatności kartą — pole punktów znika.
+    void loadLoyaltyBalance(reservation.email).then((points) => {
+      if (alive) setBalance(points);
+    });
     return () => {
       alive = false;
     };
-  }, [reservation.email]);
+  }, [reservation.email, balanceVersion]);
 
   const isExpired = expired || forcedExpired;
   const maxPoints = Math.min(balance ?? 0, Math.floor(reservation.amount / 2));
@@ -72,6 +71,8 @@ export function PurchasePanel({
         checkoutKey(reservation.reservationId),
         points,
       );
+      // Punkty zeszły z karty — zapamiętane saldo jest już nieaktualne.
+      if (points > 0) forgetLoyaltyBalance(reservation.email);
       redirectTo.assign(url);
       // Przycisk zostaje w stanie „Przechodzimy…”, dopóki przeglądarka nie zmieni strony.
     } catch (caught) {
@@ -83,6 +84,11 @@ export function PurchasePanel({
       if (caught instanceof ApiRequestError && caught.code === "RESERVATION_EXPIRED") {
         setForcedExpired(true);
         onExpired?.();
+      }
+      if (caught instanceof ApiRequestError && caught.code === "INSUFFICIENT_POINTS") {
+        // Saldo zmieniło się poza tą kartą — pobierz je jeszcze raz.
+        forgetLoyaltyBalance(reservation.email);
+        setBalanceVersion((version) => version + 1);
       }
       setError(describeApiError(caught));
     }

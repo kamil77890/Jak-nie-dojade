@@ -18,6 +18,8 @@ interface ReservationRouteDependencies {
   checkout: CheckoutService;
   loyalty: LoyaltyService;
   readGuards: Guard[];
+  /** Limit per IP + pula odczytów: odczyt salda kosztuje wywołanie Voucherify. */
+  loyaltyGuards: Guard[];
   reservationGuards: Guard[];
   purchaseGuards: Guard[];
 }
@@ -54,13 +56,15 @@ export function registerReservationRoutes(
     },
   );
 
-  // Karta A: saldo punktów klienta. E-mail, który jeszcze nic nie kupił, ma 1000 punktów.
-  app.get<{ Querystring: { email?: string } }>(
+  // Karta A: saldo punktów klienta. E-mail, który jeszcze nic nie kupił, ma 1000 punktów
+  // (bez wywołania Voucherify — kartę zakładamy dopiero przy pierwszym zapisie punktów).
+  // 400 zły e-mail, 429 limit per IP, 503 LOYALTY_UNAVAILABLE z Retry-After.
+  app.get<{ Querystring: { email?: unknown } }>(
     "/api/loyalty",
-    { preHandler: dependencies.readGuards },
+    { preHandler: dependencies.loyaltyGuards },
     async (request): Promise<LoyaltyResponse> => {
-      const email = readEmail(request.query.email);
-      return { email, points: await dependencies.loyalty.getBalance(email) };
+      const email = readLoyaltyEmail(request.query.email);
+      return { email, points: await dependencies.loyalty.readBalance(email) };
     },
   );
 
@@ -120,10 +124,19 @@ function readReservationId(raw: string | undefined): string {
   return reservationId;
 }
 
-/** Query `email` — ten sam format co przy rezerwacji, bez zmiany wielkości liter w odpowiedzi. */
-function readEmail(raw: string | undefined): string {
-  const email = (raw ?? "").trim().toLowerCase();
-  if (!email || email.length > MAX_EMAIL || !EMAIL_PATTERN.test(email)) {
+/**
+ * Query `email` — ten sam format co przy rezerwacji, znormalizowany (trim, małe litery).
+ * Powtórzony parametr (`?email=a&email=b`) przychodzi jako tablica — to też 400, nie 500.
+ */
+function readLoyaltyEmail(raw: unknown): string {
+  if (raw === undefined || (typeof raw === "string" && raw.trim() === "")) {
+    throw new ValidationError("Podaj adres e-mail w parametrze email.");
+  }
+  if (typeof raw !== "string") {
+    throw new ValidationError("Podaj dokładnie jeden adres e-mail.");
+  }
+  const email = raw.trim().toLowerCase();
+  if (email.length > MAX_EMAIL || !EMAIL_PATTERN.test(email)) {
     throw new ValidationError("Podaj poprawny adres e-mail.");
   }
   return email;
