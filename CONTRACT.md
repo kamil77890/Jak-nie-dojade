@@ -10,7 +10,7 @@ Wersja 3.0 (Etap III: punkty Voucherify, płatność punktami i mail Resend, sek
 | 02 | odmowa zakupu | `409` + `{ "error": "RESERVATION_EXPIRED" }` |
 | 03 | format `seatId` | `"wagon-miejsce"`, np. `"5-12"`; `eventId` i `seatId` są tekstem |
 | 04 | TTL | jedno źródło: `RESERVATION_TTL_MINUTES` (domyślnie 15), w testach/demo `RESERVATION_TTL_SECONDS` (ma pierwszeństwo); tryb testowy prowadzącego: `RESERVATION_TTL_MINUTES=2` bez `_SECONDS` |
-| 05 | powtórzona rezerwacja | każde drugie zajęcie miejsca z ważną rezerwacją, także identyczny request → `409 SEAT_UNAVAILABLE` |
+| 05 | powtórzona rezerwacja | identyczny request (ten sam kurs, miejsce, e-mail i imię po normalizacji) przy ważnej, nieopłaconej rezerwacji → `200` z **tą samą** rezerwacją; każde inne zajęcie miejsca z ważną rezerwacją albo kupionego → `409 SEAT_UNAVAILABLE` (od Etapu III, kryterium B1) |
 
 Dane demo: 3 kursy, każdy z wagonami **5** i **6**, po **20 miejsc** (1–20). Siatka wagonu to 5 rzędów × 4 miejsca. Pozycja wynika z numeru: 1 i 4 przy oknie, 2 i 3 przy korytarzu.
 
@@ -135,16 +135,31 @@ Wejście:
 
 Walidacja: `eventId` i `seatId` niepuste stringi, `customerName` 2–80 znaków po `trim`, poprawny e-mail do 160 znaków.
 
-`201`
+`201` — nowa rezerwacja; `200` — powtórka identycznego requestu (niżej). Ciało jest w obu przypadkach takie samo:
 
 ```json
 {
   "reservationId": "8a7f...",
-  "expiresAt": "2026-11-21T08:25:00.000Z"
+  "expiresAt": "2026-11-21T08:25:00.000Z",
+  "amount": 8900
 }
 ```
 
-Rezerwacja nie jest idempotentna: drugie zajęcie tego samego miejsca daje `409 SEAT_UNAVAILABLE`, także gdy to powtórka identycznego requestu (ten sam `eventId`, `seatId`, `customerName` i `email`) albo dwa równoległe requesty. Pierwsza rezerwacja zostaje bez zmian, a TTL się nie przedłuża.
+**Idempotencja (kryterium B1).** Identyczny request to ten sam `eventId` i `seatId` oraz ten sam klient po normalizacji:
+
+- `email`: `trim` + małe litery (`" ANNA@Example.com "` = `"anna@example.com"`),
+- `customerName`: `trim`, ciągi białych znaków zwinięte do jednej spacji, Unicode NFC (`" Anna   Kowalska "` = `"Anna Kowalska"`); wielkość liter ma znaczenie.
+
+| Stan miejsca | Odpowiedź |
+| --- | --- |
+| wolne (także po wygaśnięciu poprzedniej rezerwacji tego klienta) | `201`, nowa rezerwacja |
+| ważna, nieopłacona rezerwacja **tego samego** klienta | `200`, ta sama rezerwacja: ten sam `reservationId`, `expiresAt` i `amount`; TTL się nie przedłuża, nic nie jest zapisywane |
+| ważna rezerwacja innego klienta, także ten sam e-mail z innym imieniem | `409 SEAT_UNAVAILABLE` |
+| kupione (także przez tego samego klienta) | `409 SEAT_UNAVAILABLE` |
+
+Dwa i więcej równoległych identycznych requestów daje jedną rezerwację: pierwszy dostaje `201`, pozostałe `200` z tym samym `reservationId`. Równoległe requesty różnych klientów na to samo miejsce: dokładnie jeden `201`, reszta `409` (kryterium B2). Nagłówek `Idempotency-Key` nie jest potrzebny i jest ignorowany: o tożsamości decyduje treść requestu, więc kryterium działa także dla `curl` bez nagłówków.
+
+Dlaczego zgodność e-maila **i** imienia: prowadzący wysyła identyczny request, a ścisła zgodność utrudnia poznanie cudzego `reservationId` po samym adresie e-mail. Ograniczenie: kto zna kurs, miejsce, e-mail i imię klienta, dostanie jego `reservationId` (tak jak sam klient po ponowieniu), a z nim `GET /api/reservations/:id` (status, a po zakupie kod biletu) i możliwość zapłacenia za tę rezerwację. Bez kompletu tych danych powtórka dostaje `409` i niczego nie ujawnia.
 
 Odmowy:
 
@@ -152,8 +167,8 @@ Odmowy:
 | --- | --- | --- |
 | `400` | `VALIDATION_ERROR` | brak pola, zły e-mail, za krótkie imię |
 | `404` | `EVENT_OR_SEAT_NOT_FOUND` | nie ma kursu albo miejsca w tym kursie |
-| `409` | `SEAT_UNAVAILABLE` | miejsce jest kupione albo ma ważną rezerwację |
-| `429` | `RATE_LIMITED` | przekroczony limit rezerwacji per IP (40 na start + 4/s); nagłówek `Retry-After`. Odmowy walidacji (`400`, `413`, `415`) nie zużywają limitu; `404` i `409` zużywają |
+| `409` | `SEAT_UNAVAILABLE` | miejsce jest kupione albo ma ważną rezerwację innego klienta (powtórka identycznego requestu dostaje `200`, patrz wyżej) |
+| `429` | `RATE_LIMITED` | przekroczony limit rezerwacji per IP (40 na start + 4/s); nagłówek `Retry-After`. Odmowy walidacji (`400`, `413`, `415`) nie zużywają limitu; `404`, `409` i powtórka `200` zużywają |
 | `503` | `BUSY` / `OVERLOADED` | przeciążenie lub pełna pula zapisów |
 
 Zapis jest atomowy: sprawdzenie i insert dzieją się w jednej transakcji `BEGIN IMMEDIATE`, a częściowy unikalny indeks `(event_id, seat_id) WHERE status IN ('active','purchased')` jest ostatnią linią obrony.
@@ -253,7 +268,7 @@ Logowanie, anulowanie rezerwacji, miejsca pośrednie, aktualizacja mapy w czasie
 - `GET /api/events` zwraca 3 kursy; `GET /api/events/:id` zwraca event + `takenSeats`, a nieznany id daje `404`.
 - Oba wagony mają po 20 miejsc; okno/korytarz wynikają z numeru.
 - Aktywna rezerwacja B blokuje miejsce w A; wygasła znika po odświeżeniu.
-- Drugie zajęcie miejsca daje `409 SEAT_UNAVAILABLE`.
+- Drugie zajęcie miejsca przez innego klienta daje `409 SEAT_UNAVAILABLE`; identyczny request (po kolei i równolegle) daje `200` z tą samą rezerwacją.
 - Zakup aktywnej rezerwacji daje `200 { code }`; powtórka daje ten sam kod.
 - Zakup po TTL daje `409 RESERVATION_EXPIRED`; miejsce jest wolne w A.
 - E-mail nie blokuje wydania biletu: awaria poczty nie zmienia odpowiedzi zakupu.

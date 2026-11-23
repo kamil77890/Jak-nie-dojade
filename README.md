@@ -162,7 +162,7 @@ Mapowanie praktyk na kod i scenariusze: [`docs/PRACTICES.md`](./docs/PRACTICES.m
 | --- | --- | --- | --- |
 | `GET` | `/api/events` | `200 EventListItem[]` (z `price` w groszach) | — |
 | `GET` | `/api/events/:id` | `200 { event, takenSeats }` (`event.price`) | `404 EVENT_NOT_FOUND` |
-| `POST` | `/api/reservations` | `201 { reservationId, expiresAt, amount }` | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
+| `POST` | `/api/reservations` | `201 { reservationId, expiresAt, amount }`; powtórka identycznego requestu → `200` z tą samą rezerwacją | `400`, `404`, `409 SEAT_UNAVAILABLE`, `429` |
 | `GET` | `/api/loyalty?email=…` | `200 { email, points }` (nowy klient: 1000) | `400 VALIDATION_ERROR`, `503 LOYALTY_UNAVAILABLE` |
 | `GET` | `/api/reservations/:id` | `200 { status, amount, expiresAt, pointsUsed, pointsEarned, code? }` | `404 RESERVATION_NOT_FOUND` |
 | `POST` | `/api/reservations/:id/checkout` | `200 { url }` — wymaga `Idempotency-Key`; opcjonalne body `{ points }` | `400 IDEMPOTENCY_KEY_REQUIRED` / `VALIDATION_ERROR`, `404`, `409 RESERVATION_EXPIRED` / `RESERVATION_PAID` / `POINTS_LIMIT_EXCEEDED` / `INSUFFICIENT_POINTS`, `429`, `503 PAYMENTS_UNAVAILABLE` / `LOYALTY_UNAVAILABLE` |
@@ -171,7 +171,7 @@ Mapowanie praktyk na kod i scenariusze: [`docs/PRACTICES.md`](./docs/PRACTICES.m
 
 Wszystkie błędy mają envelope `{ error, message, retryAfter? }`: `error` to stały kod, `message` komunikat po polsku (przy `5xx` ogólny), `retryAfter` tylko przy `429`/`503`. Status HTTP niesie znaczenie.
 
-- Drugie zajęcie tego samego miejsca daje `409 SEAT_UNAVAILABLE` — także powtórka identycznego requestu i dwa równoległe requesty. Pierwsza rezerwacja zostaje bez zmian.
+- Rezerwacja jest idempotentna (kryterium B1): identyczny request — ten sam kurs, miejsce, e-mail (`trim`, małe litery) i imię (`trim`, zwinięte spacje) — przy ważnej, nieopłaconej rezerwacji dostaje `200` z **tą samą** rezerwacją (ten sam `reservationId`, `expiresAt` i `amount`, TTL bez przedłużania), po kolei i równolegle. Inny klient (także ten sam e-mail z innym imieniem) i miejsce już kupione dostają `409 SEAT_UNAVAILABLE`, a po wygaśnięciu powstaje nowa rezerwacja. Szczegóły i uzasadnienie: `CONTRACT.md` §3.
 - Bilet wydaje wyłącznie webhook Stripe'a. Księgowanie jest idempotentne: ponowna dostawa nie tworzy drugiego kodu ani joba e-mail. Spóźniona albo podwójna płatność jest automatycznie zwracana (reguły w `CONTRACT.md` §10.4).
 
 Dodatkowo, poza kontraktem:
@@ -277,9 +277,9 @@ rm -rf apps/api/data
 
 ## Limit rezerwacji
 
-Limit rezerwacji to token bucket per IP: **40 na start i doładowanie 4 na sekundę**. Do limitu liczą się tylko requesty, które przeszły walidację. Odmowy walidacji (`400`, `413`, `415`: zły body, za duży body, zły `Content-Type`) oddają żeton, bo nie dotknęły bazy, a seria złych requestów i tak jest ograniczona limitem globalnym (300 na start + 10/s). `404` (nieistniejący kurs lub miejsce) i `409 SEAT_UNAVAILABLE` żetonu nie oddają, więc zalew nieistniejących albo zajętych miejsc też dostaje `429`.
+Limit rezerwacji to token bucket per IP: **40 na start i doładowanie 4 na sekundę**. Do limitu liczą się tylko requesty, które przeszły walidację. Odmowy walidacji (`400`, `413`, `415`: zły body, za duży body, zły `Content-Type`) oddają żeton, bo nie dotknęły bazy, a seria złych requestów i tak jest ograniczona limitem globalnym (300 na start + 10/s). `404` (nieistniejący kurs lub miejsce), `409 SEAT_UNAVAILABLE` i powtórka identycznej rezerwacji (`200`) żetonu nie oddają, więc zalew nieistniejących albo zajętych miejsc — i zalew tym samym requestem — też dostaje `429`. Powtórka kosztuje tyle co każda rezerwacja (transakcja zapisu w bazie), a podwójne kliknięcie zużywa 2 z 40 żetonów, więc człowiek nie odczuje limitu.
 
-- Szybki przebieg testera z jednego IP mieści się w limicie: złe requesty z B3 (`400` za darmo, `404` po żetonie), 4 powtórki rezerwacji, 20 równoczesnych prób jednego miejsca i 10 kolejnych rezerwacji pod testy zakupu i TTL — bez żadnego `429`.
+- Szybki przebieg testera z jednego IP mieści się w limicie: złe requesty z B3 (`400` za darmo, `404` po żetonie), 4 powtórki identycznej rezerwacji (`201` + 3 × `200`), 20 równoczesnych prób jednego miejsca i 10 kolejnych rezerwacji pod testy zakupu i TTL — bez żadnego `429`.
 - 100 rezerwacji w 10 s z jednego IP: po ok. 80 odpowiedziach `2xx`/`409` reszta (ok. 20) dostaje `429` z `Retry-After`. Inny klient ma osobny kubełek.
 - Po zalewie limit odbudowuje się w ok. 10 s (żeton co 0,25 s). Requesty wysłane z tego samego IP w ułamku sekundy po zalewie dostaną `429` przy każdym ustawieniu, które nadal łapie B5. Porównanie na prawdziwych requestach:
 

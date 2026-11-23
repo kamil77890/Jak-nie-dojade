@@ -37,9 +37,11 @@ export function registerReservationRoutes(
     { preHandler: dependencies.reservationGuards },
     async (request, reply): Promise<CreateReservationResponse> => {
       const input = parseCreateReservation(request.body);
-      const reservation = dependencies.bookings.createReservation(input);
+      const { reservation, created } = dependencies.bookings.createReservation(input);
 
-      reply.code(201);
+      // 201 — nowa rezerwacja; 200 — powtórka identycznego requestu dostała tę samą
+      // (RFC 9110: 201 tylko wtedy, gdy zasób właśnie powstał). Ciało jest takie samo.
+      reply.code(created ? 201 : 200);
       return {
         reservationId: reservation.id,
         expiresAt: reservation.expiresAt,

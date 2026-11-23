@@ -46,20 +46,125 @@ describe("karta B — rezerwacja", () => {
     expect(duplicate.json()).toEqual({ error: "SEAT_UNAVAILABLE", message: expect.any(String) });
   });
 
-  it("powtórka identycznej rezerwacji też daje 409, a pierwsza rezerwacja zostaje", async () => {
+});
+
+describe("karta B — idempotentna rezerwacja (B1)", () => {
+  function countFor(seatId = "5-1"): number {
+    const row = ctx.services.db
+      .prepare("SELECT COUNT(*) AS n FROM reservations WHERE event_id = ? AND seat_id = ?")
+      .get("ic-7310-2026-11-21", seatId) as { n: number };
+    return Number(row.n);
+  }
+
+  it("identyczny request po kolei: 201, potem 200 z tą samą rezerwacją (id, expiresAt, amount)", async () => {
     ctx = await createTestContext();
     const first = await reserve();
-    const [second, third] = await Promise.all([reserve(), reserve()]);
+    ctx.advance(30_000);
+    const second = await reserve();
+    const third = await reserve();
 
     expect(first.statusCode).toBe(201);
-    expect(second.statusCode).toBe(409);
-    expect(third.statusCode).toBe(409);
-    expect(second.json()).toEqual({ error: "SEAT_UNAVAILABLE", message: expect.any(String) });
-
-    const detail = await ctx.app.inject({ method: "GET", url: "/api/events/ic-7310-2026-11-21" });
-    expect(detail.json<EventDetailResponse>().takenSeats.filter((seat) => seat === "5-1")).toHaveLength(1);
+    expect(second.statusCode).toBe(200);
+    expect(third.statusCode).toBe(200);
+    const body = first.json<CreateReservationResponse>();
+    // TTL się nie przedłuża — powtórka nie może trzymać miejsca w nieskończoność.
+    expect(second.json()).toEqual(body);
+    expect(third.json()).toEqual(body);
+    expect(countFor()).toBe(1);
   });
 
+  it("normalizuje e-mail (trim, małe litery) i imię (trim, zwinięte spacje)", async () => {
+    ctx = await createTestContext();
+    const first = await reserve(reservationPayload({ customerName: "Anna Kowalska", email: "anna@example.com" }));
+    const again = await reserve(
+      reservationPayload({ customerName: "  Anna   Kowalska ", email: "  ANNA@Example.com " }),
+    );
+
+    expect(first.statusCode).toBe(201);
+    expect(again.statusCode).toBe(200);
+    expect(again.json<CreateReservationResponse>().reservationId).toBe(
+      first.json<CreateReservationResponse>().reservationId,
+    );
+    expect(countFor()).toBe(1);
+  });
+
+  it.each([2, 20])("%i identycznych requestów równolegle → jedna rezerwacja, wszystkie 2xx z tym samym id", async (n) => {
+    ctx = await createTestContext();
+    const responses = await Promise.all(Array.from({ length: n }, () => reserve()));
+    const codes = responses.map((response) => response.statusCode);
+
+    expect(codes.filter((code) => code === 201)).toHaveLength(1);
+    expect(codes.filter((code) => code === 200)).toHaveLength(n - 1);
+    const ids = new Set(responses.map((response) => response.json<CreateReservationResponse>().reservationId));
+    expect(ids.size).toBe(1);
+    expect(countFor()).toBe(1);
+  });
+
+  it("20 różnych klientów na to samo miejsce równolegle (B2) → dokładnie jedna 2xx, reszta 409", async () => {
+    ctx = await createTestContext();
+    const responses = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        reserve(reservationPayload({ customerName: `Klient ${i}`, email: `k${i}@example.com` })),
+      ),
+    );
+    const codes = responses.map((response) => response.statusCode);
+
+    expect(codes.filter((code) => code >= 200 && code < 300)).toHaveLength(1);
+    expect(codes.filter((code) => code === 409)).toHaveLength(19);
+    expect(countFor()).toBe(1);
+  });
+
+  it("inny e-mail albo ten sam e-mail z innym imieniem → 409 SEAT_UNAVAILABLE", async () => {
+    ctx = await createTestContext();
+    expect((await reserve()).statusCode).toBe(201);
+
+    for (const payload of [
+      reservationPayload({ email: "ktos.inny@example.com" }),
+      reservationPayload({ customerName: "Jan Nowak" }),
+      // Wielkość liter w imieniu ma znaczenie — to nie jest identyczny request.
+      reservationPayload({ customerName: "anna kowalska" }),
+    ]) {
+      const response = await reserve(payload);
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ error: "SEAT_UNAVAILABLE", message: expect.any(String) });
+    }
+    expect(countFor()).toBe(1);
+  });
+
+  it("po wygaśnięciu powtórka tworzy NOWĄ rezerwację (nowe id i expiresAt)", async () => {
+    ctx = await createTestContext();
+    const first = await reserve();
+    ctx.advance(ctx.services.config.ttlMs + 1);
+    const again = await reserve();
+
+    expect(first.statusCode).toBe(201);
+    expect(again.statusCode).toBe(201);
+    const before = first.json<CreateReservationResponse>();
+    const after = again.json<CreateReservationResponse>();
+    expect(after.reservationId).not.toBe(before.reservationId);
+    expect(Date.parse(after.expiresAt)).toBeGreaterThan(Date.parse(before.expiresAt));
+
+    const old = await ctx.app.inject({ method: "GET", url: `/api/reservations/${before.reservationId}` });
+    expect(old.json()).toMatchObject({ status: "expired" });
+  });
+
+  it("po opłaceniu powtórka dostaje 409 SEAT_UNAVAILABLE, a bilet zostaje", async () => {
+    ctx = await createTestContext();
+    const first = await reserve();
+    const { reservationId } = first.json<CreateReservationResponse>();
+    const { code } = await payReservation(ctx, reservationId);
+
+    const again = await reserve();
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toEqual({ error: "SEAT_UNAVAILABLE", message: expect.any(String) });
+    expect(countFor()).toBe(1);
+
+    const status = await ctx.app.inject({ method: "GET", url: `/api/reservations/${reservationId}` });
+    expect(status.json()).toMatchObject({ status: "paid", code });
+  });
+});
+
+describe("karta B — walidacja i TTL", () => {
   it("zły Content-Type i zły JSON to 4xx, nie 5xx", async () => {
     ctx = await createTestContext();
     const xml = await ctx.app.inject({
