@@ -154,6 +154,17 @@ export function Spark(props: IconProps) {
   );
 }
 
+/** Punkty programu lojalnościowego: moneta. */
+export function Coin(props: IconProps) {
+  return (
+    <svg {...iconProps(props)}>
+      <circle cx="12" cy="12" r="8.5" />
+      <circle cx="12" cy="12" r="5" />
+      <path d="M12 9.5v5" />
+    </svg>
+  );
+}
+
 export function Sun(props: IconProps) {
   return (
     <svg {...iconProps(props)}>

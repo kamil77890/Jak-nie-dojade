@@ -574,6 +574,77 @@
   .ticket-perforation::after {
     right: -14px;
   }
+
+  /*
+   * Program punktowy (Etap III): ten sam znak monety na formularzu, przy płatności i na bilecie.
+   * W ciemnym motywie bez jasnych płaszczyzn — tylko żółty znak i delikatny żółty odcień.
+   */
+  .points-badge {
+    @apply grid size-9 shrink-0 place-items-center rounded-full bg-accent text-black;
+  }
+
+  /* Saldo pod polem e-mail: podpowiedź, a nie pole formularza — inny kształt i odcień niż .field-input. */
+  .points-note {
+    @apply flex items-start gap-3 rounded-2xl border border-accent/60 bg-accent/10 px-4 py-3.5 text-[15px] leading-snug;
+  }
+
+  /* „Użyj punktów” w panelu płatności. */
+  .points-panel {
+    @apply mb-5 rounded-2xl border border-line p-4 sm:p-5;
+  }
+
+  .points-receipt {
+    @apply mt-4 grid border-t border-line text-[15px];
+  }
+
+  .points-receipt > div {
+    @apply flex items-baseline justify-between gap-4 border-b border-line py-2;
+  }
+
+  .points-receipt dt {
+    @apply text-muted;
+  }
+
+  .points-receipt dd {
+    @apply font-semibold whitespace-nowrap;
+  }
+
+  .points-receipt > .points-receipt-total {
+    @apply border-b-0 pb-0 pt-2.5;
+  }
+
+  .points-receipt-total dt {
+    @apply font-semibold text-ink;
+  }
+
+  .points-receipt-total dd {
+    @apply text-[22px] font-extrabold leading-none narrow;
+  }
+
+  /* Podsumowanie na bilecie: trzy komórki z linią między nimi, jak pola biletu. */
+  .points-summary-grid {
+    @apply grid gap-px border-y border-line bg-line sm:grid-cols-3;
+  }
+
+  .points-summary-grid > div {
+    @apply bg-surface px-6 py-4 sm:px-8;
+  }
+
+  .points-summary-grid dt {
+    @apply text-[14px] font-semibold text-muted;
+  }
+
+  .points-summary-grid dd {
+    @apply mt-1 flex flex-wrap items-baseline gap-x-2 text-[34px] font-extrabold leading-none narrow;
+  }
+
+  .points-summary-grid dd small {
+    @apply text-[15px] font-semibold text-muted [font-stretch:100%];
+  }
+
+  .points-summary-earned dd {
+    @apply text-accent-ink;
+  }
 }
 
 /* Przejścia między podstronami (View Transitions API, React Router `viewTransition`). */
@@ -621,6 +692,25 @@
 
   .no-print {
     display: none !important;
+  }
+
+  /* Podsumowanie punktów na wydruku: białe tło i czarny tekst także z ciemnego motywu, bez dzielenia strony. */
+  .points-summary {
+    break-inside: avoid;
+    border: 2px solid #000;
+    background: #fff;
+    color: #000;
+    /* Tokeny Tailwinda (--color-*) liczą się na :root, więc nadpisujemy je tutaj razem z --c-*. */
+    --color-ink: #000;
+    --color-muted: #333;
+    --color-line: rgb(0 0 0 / 0.25);
+    --color-surface: #fff;
+    --color-accent-ink: #000;
+  }
+
+  .points-badge {
+    border: 1.5px solid #000;
+    background: #fff;
   }
 }
 

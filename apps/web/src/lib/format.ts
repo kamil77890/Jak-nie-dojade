@@ -103,3 +103,13 @@ export function seatsInWagonLabel(count: number): string {
 export function freeSeatsWord(count: number): string {
   return pluralPl(count, "wolne miejsce", "wolne miejsca", "wolnych miejsc");
 }
+
+/** Liczba punktów w formacie pl-PL z odmianą: 1 punkt, 2 punkty, 5 punktów, 1000 punktów. */
+export function pointsLabel(count: number): string {
+  return `${count.toLocaleString("pl-PL")} ${pointsWord(count)}`;
+}
+
+/** Sama odmiana: „punkt”, „punkty”, „punktów”. */
+export function pointsWord(count: number): string {
+  return pluralPl(count, "punkt", "punkty", "punktów");
+}

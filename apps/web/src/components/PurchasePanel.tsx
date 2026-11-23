@@ -5,7 +5,8 @@ import { ApiRequestError, startCheckout } from "../lib/api";
 import { describeApiError, RESERVATION_EXPIRED_MESSAGE } from "../lib/errors";
 import { forgetLoyaltyBalance, loadLoyaltyBalance, peekLoyaltyBalance } from "../lib/loyalty";
 import { checkoutKey } from "../lib/session";
-import { ArrowRight, Mail, Shield } from "./Icons";
+import { pointsLabel } from "../lib/format";
+import { ArrowRight, Coin, Mail, Shield } from "./Icons";
 
 /** Przejście na stronę Stripe'a. Osobno, żeby testy mogły je podmienić. */
 export const redirectTo = {
@@ -128,46 +129,75 @@ export function PurchasePanel({
       </p>
 
       {balance !== null && maxPoints > 0 ? (
-        <div className="mb-5 rounded-2xl border border-line bg-raised/60 p-4">
-          <label htmlFor="points" className="flex items-baseline justify-between gap-3 text-[15px] font-semibold">
-            <span>Użyj punktów</span>
-            <span className="text-[14px] font-normal text-muted">
-              masz {balance.toLocaleString("pl-PL")} pkt
+        <div className="points-panel">
+          <div className="flex items-center gap-3">
+            <span className="points-badge" aria-hidden="true">
+              <Coin size={18} />
             </span>
-          </label>
-          <div className="mt-2 flex items-center gap-2">
-            <input
-              id="points"
-              name="points"
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={maxPoints}
-              step={1}
-              className="field-input w-[140px]"
-              value={pointsRaw}
-              onChange={(changeEvent) => updatePoints(changeEvent.target.value)}
-              onBlur={() => setPointsRaw(String(points))}
-              aria-describedby="points-hint"
-            />
-            <span className="text-[15px] text-muted">pkt</span>
+            <label htmlFor="points" className="text-[17px] font-bold leading-tight">
+              Użyj punktów
+            </label>
+            <span id="points-balance" className="ml-auto text-right text-[14px] text-muted">
+              masz <strong className="font-semibold text-ink">{balance.toLocaleString("pl-PL")} pkt</strong>
+            </span>
+          </div>
+          <div className="mt-4 flex flex-wrap items-stretch gap-2">
+            <div className="relative min-w-[132px] flex-1">
+              <input
+                id="points"
+                name="points"
+                type="number"
+                inputMode="numeric"
+                min={0}
+                max={maxPoints}
+                step={1}
+                className="field-input pr-14 text-[20px] font-bold"
+                value={pointsRaw}
+                onChange={(changeEvent) => updatePoints(changeEvent.target.value)}
+                onBlur={() => setPointsRaw(String(points))}
+                aria-describedby="points-balance points-hint"
+              />
+              <span
+                className="pointer-events-none absolute inset-y-0 right-4 grid place-items-center text-[15px] font-semibold text-muted"
+                aria-hidden="true"
+              >
+                pkt
+              </span>
+            </div>
             <button
               type="button"
-              className="ml-auto text-[14px] font-semibold text-ink underline underline-offset-4"
+              className="btn btn-ghost min-h-14 shrink-0 whitespace-nowrap px-5 max-sm:grow"
               onClick={() => setPointsRaw(String(maxPoints))}
             >
               Użyj maksimum
             </button>
           </div>
-          <p id="points-hint" className="mt-2 text-[14px] text-muted">
-            Możesz zapłacić punktami do {formatPrice(maxPoints)} (najwyżej połowa ceny biletu).
-            100 punktów = 1 zł.
+          <p id="points-hint" className="mt-3 text-[14px] text-muted">
+            Możesz użyć do{" "}
+            <strong className="font-semibold text-ink">
+              {pointsLabel(maxPoints)} ({formatPrice(maxPoints)})
+            </strong>{" "}
+            — punktami zapłacisz najwyżej połowę ceny biletu. 100 punktów = 1 zł.
           </p>
-          {points > 0 ? (
-            <p className="mt-2 text-[14px] font-semibold text-ink">
-              {formatPrice(reservation.amount)} − {formatPrice(points)} punktami = {formatPrice(payable)} kartą
-            </p>
-          ) : null}
+          {/* Wyliczenie zmienia się przy wpisywaniu — region jest stały, treść ogłaszana grzecznie. */}
+          <div aria-live="polite" className="empty:hidden">
+            {points > 0 ? (
+              <dl className="points-receipt" aria-label="Wyliczenie płatności">
+                <div>
+                  <dt>Cena biletu</dt>
+                  <dd>{formatPrice(reservation.amount)}</dd>
+                </div>
+                <div>
+                  <dt>Punktami</dt>
+                  <dd>− {formatPrice(points)}</dd>
+                </div>
+                <div className="points-receipt-total">
+                  <dt>Kartą</dt>
+                  <dd>{formatPrice(payable)}</dd>
+                </div>
+              </dl>
+            ) : null}
+          </div>
         </div>
       ) : null}
 

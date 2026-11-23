@@ -2,12 +2,12 @@ import { formatPrice, formatSeatLabel, type Event, type ReservationView } from "
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { ErrorPanel, InlineAlert, LoadingBlock } from "../components/Feedback";
-import { ArrowLeft } from "../components/Icons";
+import { ArrowLeft, Coin } from "../components/Icons";
 import { TripSummary } from "../components/TripSummary";
 import { createReservation, getEvent } from "../lib/api";
 import { describeApiError } from "../lib/errors";
 import { loadLoyaltyBalance, normalizeLoyaltyEmail, peekLoyaltyBalance } from "../lib/loyalty";
-import { toSummary, trainLabel } from "../lib/format";
+import { pointsLabel, toSummary, trainLabel } from "../lib/format";
 import { EASE, gsap, useGsap } from "../lib/motion";
 import { loadPassenger, savePassenger, saveReservation } from "../lib/session";
 import { formatTtl, useReservationTtl } from "../lib/ttl";
@@ -297,14 +297,23 @@ export function ReservePage() {
                 />
               </Field>
 
-              {balance && balance.email === passenger.email.trim().toLowerCase() ? (
-                <p className="rounded-xl border border-line bg-raised/60 px-4 py-3 text-[15px]" aria-live="polite">
-                  <strong className="font-semibold">Masz {balance.points.toLocaleString("pl-PL")} punktów</strong>{" "}
-                  <span className="text-muted">
-                    ({formatPrice(balance.points)}). Punktami możesz zapłacić do połowy ceny biletu.
-                  </span>
-                </p>
-              ) : null}
+              {/* Region aria-live jest zawsze w drzewie, żeby czytnik ekranu ogłosił saldo, gdy się pojawi. */}
+              <div className="empty:hidden" aria-live="polite" aria-atomic="true">
+                {balance && balance.email === passenger.email.trim().toLowerCase() ? (
+                  <p className="points-note">
+                    <span className="points-badge" aria-hidden="true">
+                      <Coin size={18} />
+                    </span>
+                    <span>
+                      <strong className="block text-[16px] font-bold">Masz {pointsLabel(balance.points)}</strong>
+                      <span className="text-muted">
+                        To {formatPrice(balance.points)}. Punktami zapłacisz do połowy ceny biletu — wybierzesz
+                        je przy płatności.
+                      </span>
+                    </span>
+                  </p>
+                ) : null}
+              </div>
 
               {serverError ? <InlineAlert>{serverError}</InlineAlert> : null}
 

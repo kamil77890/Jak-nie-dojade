@@ -2,9 +2,9 @@ import { formatDuration, formatEventDate, formatPrice, formatSeatLabel, getSeat,
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "react-router";
 import { EmptyPanel } from "../components/Feedback";
-import { CheckCircle, Mail, Printer, Shield } from "../components/Icons";
+import { CheckCircle, Coin, Mail, Printer, Shield } from "../components/Icons";
 import { getReservationStatus } from "../lib/api";
-import { splitRelation, timeFromIso, trainLabel, weekdayPl } from "../lib/format";
+import { pointsLabel, pointsWord, splitRelation, timeFromIso, trainLabel, weekdayPl } from "../lib/format";
 import { EASE, gsap, scrambleText, useGsap } from "../lib/motion";
 import { loadTicket } from "../lib/session";
 import { useDocumentTitle } from "../hooks/useCountdown";
@@ -161,30 +161,36 @@ export function TicketPage() {
       </article>
 
       {ticket.pointsEarned !== undefined ? (
-        <section className="intro card mt-8 p-6 sm:p-8" aria-labelledby="points-summary">
-          <h2 id="points-summary" className="text-[24px] font-extrabold leading-tight condensed">
-            Podsumowanie zakupu
-          </h2>
-          <dl className="mt-4 grid gap-4 sm:grid-cols-3">
+        <section className="intro points-summary card mt-8 overflow-hidden" aria-labelledby="points-summary">
+          <div className="flex items-center gap-3 px-6 pt-6 sm:px-8 sm:pt-7">
+            <span className="points-badge" aria-hidden="true">
+              <Coin size={18} />
+            </span>
+            <h2 id="points-summary" className="text-[24px] font-extrabold leading-tight condensed">
+              Podsumowanie zakupu
+            </h2>
+          </div>
+          <dl className="points-summary-grid mt-5">
             <div>
-              <dt className="text-[14px] font-semibold text-muted">Zapłacono kartą</dt>
-              <dd className="mt-1 text-[22px] font-bold narrow">
-                {formatPrice(Math.max(0, (ticket.amount ?? 0) - (ticket.pointsUsed ?? 0)))}
-              </dd>
+              <dt>Zapłacono kartą</dt>
+              <dd>{formatPrice(Math.max(0, (ticket.amount ?? 0) - (ticket.pointsUsed ?? 0)))}</dd>
             </div>
             <div>
-              <dt className="text-[14px] font-semibold text-muted">Zapłacono punktami</dt>
-              <dd className="mt-1 text-[22px] font-bold narrow">
-                {ticket.pointsUsed ?? 0} pkt{" "}
-                <span className="text-[15px] font-semibold text-muted">({formatPrice(ticket.pointsUsed ?? 0)})</span>
+              <dt>Zapłacono punktami</dt>
+              <dd>
+                {formatPrice(ticket.pointsUsed ?? 0)}
+                <small>{pointsLabel(ticket.pointsUsed ?? 0)}</small>
               </dd>
             </div>
-            <div>
-              <dt className="text-[14px] font-semibold text-muted">Punkty za ten zakup</dt>
-              <dd className="mt-1 text-[22px] font-bold narrow text-accent-ink">+{ticket.pointsEarned} pkt</dd>
+            <div className="points-summary-earned">
+              <dt>Punkty za ten zakup</dt>
+              <dd>
+                +{(ticket.pointsEarned ?? 0).toLocaleString("pl-PL")}
+                <small>{pointsWord(ticket.pointsEarned ?? 0)}</small>
+              </dd>
             </div>
           </dl>
-          <p className="mt-4 border-t border-line pt-4 text-[14px] text-muted">
+          <p className="px-6 pb-6 pt-4 text-[14px] text-muted sm:px-8 sm:pb-7">
             Punkty naliczamy za część zapłaconą kartą: 10 punktów za każdy pełny złoty. Saldo prowadzi
             Voucherify — zobaczysz je też w aplikacji i w kasach.
           </p>
