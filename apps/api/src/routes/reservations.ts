@@ -129,7 +129,11 @@ function readEmail(raw: string | undefined): string {
   return email;
 }
 
-/** Body checkoutu jest opcjonalne; brak = 0 punktów (tryb z Etapu II). */
+/**
+ * Body checkoutu jest opcjonalne; brak = 0 punktów (tryb z Etapu II).
+ * Tu tylko format (400). Limit połowy ceny i saldo to reguły biznesowe (409)
+ * sprawdzane w CheckoutService, bo zależą od rezerwacji i Voucherify.
+ */
 function readPoints(body: unknown): number {
   if (body === undefined || body === null) return 0;
   if (typeof body !== "object" || Array.isArray(body)) {
@@ -137,7 +141,8 @@ function readPoints(body: unknown): number {
   }
   const raw = (body as Record<string, unknown>).points;
   if (raw === undefined || raw === null) return 0;
-  if (typeof raw !== "number" || !Number.isInteger(raw) || raw < 0) {
+  // isSafeInteger odrzuca też 1e300 i inne liczby, na których arytmetyka groszy przestaje być dokładna.
+  if (typeof raw !== "number" || !Number.isSafeInteger(raw) || raw < 0) {
     throw new ValidationError("Liczba punktów musi być nieujemną liczbą całkowitą.");
   }
   return raw;

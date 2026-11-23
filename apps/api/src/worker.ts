@@ -168,7 +168,8 @@ export class TicketMailWorker {
       departureTime: event.departureTime,
       seatLabel: formatSeatLabel(reservation.seatId),
       pointsUsed: status.pointsUsed,
-      pointsEarned: status.pointsEarned,
+      // Job powstaje dopiero po opłaceniu, więc pole jest; `?? 0` tylko dla typu.
+      pointsEarned: status.pointsEarned ?? 0,
     });
   }
 

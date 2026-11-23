@@ -80,15 +80,19 @@ export interface CheckoutResponse {
 /** Status rezerwacji widziany przez klienta w Etapie II. */
 export type PaymentStatus = "held" | "paid" | "expired";
 
-/** `GET /api/reservations/:id`. `code` jest tylko przy `paid`. */
+/** `GET /api/reservations/:id`. `code` i `pointsEarned` są tylko przy `paid`. */
 export interface ReservationStatusResponse {
   status: PaymentStatus;
   amount: number;
   expiresAt: string;
-  /** Ile punktów klient wydał na ten zakup (0, dopóki nie opłacono). */
+  /**
+   * Przy `paid` — ile punktów klient wydał na ten zakup. Wcześniej — ile punktów jest
+   * pobranych z karty na sesje płatności tej rezerwacji i jeszcze nie wróciło
+   * (0 bez punktów albo po ich zwrocie).
+   */
   pointsUsed: number;
-  /** Ile punktów naliczono po opłaceniu; 0 przed płatnością. */
-  pointsEarned: number;
+  /** Ile punktów naliczono za zakup — tylko przy `paid` (wcześniej pole nie występuje). */
+  pointsEarned?: number;
   code?: string;
 }
 

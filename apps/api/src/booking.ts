@@ -35,7 +35,13 @@ interface ReservationRow {
   points_awarded_at: string | null;
 }
 
-const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+interface SessionRow {
+  amount: number;
+  points_used: number;
+  points_refunded_at: string | null;
+}
+
+const CODE_ALPHABET ="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
 export interface PurchaseResult {
   code: string;
@@ -61,7 +67,15 @@ export type PaymentOutcome =
   | { kind: "duplicate"; code: string }
   | {
       kind: "refund";
-      reason: "unknown_reservation" | "already_paid" | "amount_mismatch" | "late_payment" | "seat_taken";
+      reason:
+        | "unknown_reservation"
+        | "already_paid"
+        | "amount_mismatch"
+        | "late_payment"
+        | "seat_taken"
+        // Punkty tej sesji już wróciły na kartę (sesja wygasła albo została zastąpiona),
+        // więc wydanie biletu ze zniżką oznaczałoby darmowe punkty.
+        | "points_returned";
     };
 
 const CLIENT_STATUS: Record<Reservation["status"], PaymentStatus> = {
@@ -189,7 +203,14 @@ export class BookingService {
     });
   }
 
-  /** `GET /api/reservations/:id` — stan widziany przez klienta po powrocie ze Stripe'a. */
+  /**
+   * `GET /api/reservations/:id` — stan widziany przez klienta po powrocie ze Stripe'a.
+   *
+   * - `pointsUsed`: po opłaceniu — punkty wydane na zakup; wcześniej — punkty pobrane
+   *   z karty na sesje płatności tej rezerwacji i jeszcze niezwrócone (zgadza się
+   *   ze spadkiem salda w Voucherify; po zwrocie punktów wraca do 0).
+   * - `pointsEarned`: tylko po opłaceniu (CONTRACT.md §11.2).
+   */
   getStatus(reservationId: string): ReservationStatusResponse {
     const nowIso = new Date(this.clock()).toISOString();
 
@@ -198,14 +219,15 @@ export class BookingService {
 
       const row = this.getRow(reservationId);
       if (!row) throw new ReservationNotFoundError();
-      return {
+      const base = {
         status: CLIENT_STATUS[row.status],
         amount: row.amount,
         expiresAt: row.expires_at,
-        pointsUsed: row.points_used,
-        pointsEarned: row.points_earned,
-        ...(row.status === "purchased" && row.code ? { code: row.code } : {}),
       };
+      if (row.status === "purchased" && row.code) {
+        return { ...base, pointsUsed: row.points_used, pointsEarned: row.points_earned, code: row.code };
+      }
+      return { ...base, pointsUsed: this.pointsHeld(row.id) };
     });
   }
 
@@ -237,6 +259,13 @@ export class BookingService {
       const session = this.getSession(payment.sessionId);
       const charged = session?.amount ?? row.amount;
       const pointsUsed = session?.points_used ?? 0;
+
+      // Ta sama transakcja (BEGIN IMMEDIATE) co rezerwacja zwrotu punktów w CheckoutService:
+      // albo punkty wróciły i płatność idzie do zwrotu, albo bilet jest wydany i punktów
+      // tej sesji nikt już nie odda.
+      if (session && session.points_used > 0 && session.points_refunded_at) {
+        return { kind: "refund", reason: "points_returned" };
+      }
 
       if (payment.amount !== charged || payment.currency.toLowerCase() !== "pln") {
         return { kind: "refund", reason: "amount_mismatch" };
@@ -359,11 +388,22 @@ export class BookingService {
     return row ?? null;
   }
 
-  private getSession(sessionId: string): { amount: number; points_used: number } | null {
+  private getSession(sessionId: string): SessionRow | null {
     const row = this.db
-      .prepare("SELECT amount, points_used FROM checkout_sessions WHERE id = ?")
-      .get(sessionId) as unknown as { amount: number; points_used: number } | undefined;
+      .prepare("SELECT amount, points_used, points_refunded_at FROM checkout_sessions WHERE id = ?")
+      .get(sessionId) as unknown as SessionRow | undefined;
     return row ?? null;
+  }
+
+  /** Punkty pobrane na sesje tej rezerwacji, które jeszcze nie wróciły na kartę. */
+  private pointsHeld(reservationId: string): number {
+    const row = this.db
+      .prepare(
+        `SELECT COALESCE(SUM(points_used), 0) AS held FROM checkout_sessions
+         WHERE reservation_id = ? AND points_refunded_at IS NULL`,
+      )
+      .get(reservationId) as unknown as { held: number };
+    return Number(row.held);
   }
 
   private mapRow(row: ReservationRow): Reservation {

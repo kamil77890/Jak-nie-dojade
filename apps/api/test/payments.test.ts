@@ -70,7 +70,8 @@ describe("GET /api/reservations/:id", () => {
 
     const held = await status(reservationId);
     expect(held.statusCode).toBe(200);
-    expect(held.json()).toEqual({ status: "held", amount: PRICE, expiresAt, pointsUsed: 0, pointsEarned: 0 });
+    // `pointsEarned` pojawia się dopiero po opłaceniu (CONTRACT.md §11.2).
+    expect(held.json()).toEqual({ status: "held", amount: PRICE, expiresAt, pointsUsed: 0 });
 
     const { code } = await payReservation(ctx, reservationId);
     expect((await status(reservationId)).json()).toEqual({

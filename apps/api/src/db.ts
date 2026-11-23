@@ -63,6 +63,9 @@ const SCHEMA = `
     expires_at      TEXT NOT NULL,
     payment_intent  TEXT,
     points_used     INTEGER NOT NULL DEFAULT 0,
+    -- Kiedy punkty tej sesji wróciły na kartę (wygaśnięcie, zwrot płatności, zmiana punktów).
+    -- Ustawiany przed wywołaniem Voucherify i cofany, gdy ono padnie — zwrot dokładnie raz.
+    points_refunded_at TEXT,
     UNIQUE (reservation_id, idempotency_key)
   );
 
@@ -87,8 +90,11 @@ const SCHEMA = `
   );
 `;
 
-/** Kolumny dodane w Etapie II do istniejącej bazy z Etapu I. */
-const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> = [
+/**
+ * Kolumny dodane w kolejnych etapach do istniejącej bazy. `backfill` wykonuje się
+ * raz, zaraz po dodaniu kolumny — uzupełnia ją dla wierszy sprzed migracji.
+ */
+const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string; backfill?: string }> = [
   { table: "reservations", column: "amount", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { table: "reservations", column: "paid_session_id", ddl: "TEXT" },
   // Etap III: punkty użyte i zebrane. Wartości liczy API, Voucherify trzyma saldo.
@@ -97,13 +103,23 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   // Znacznik „punkty już poszły do Voucherify” — job e-mail jest at-least-once.
   { table: "reservations", column: "points_awarded_at", ddl: "TEXT" },
   { table: "checkout_sessions", column: "points_used", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  {
+    table: "checkout_sessions",
+    column: "points_refunded_at",
+    ddl: "TEXT",
+    // Stary kod oddawał punkty przy przejściu open → expired (a przy błędzie Voucherify
+    // cofał sesję do `open`), więc wygasłe sesje z punktami mają je już zwrócone.
+    backfill: `UPDATE checkout_sessions SET points_refunded_at = created_at
+               WHERE status = 'expired' AND points_used > 0 AND points_refunded_at IS NULL`,
+  },
 ];
 
 function migrate(db: DatabaseSyncType): void {
-  for (const { table, column, ddl } of COLUMN_MIGRATIONS) {
+  for (const { table, column, ddl, backfill } of COLUMN_MIGRATIONS) {
     const columns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name: string }>;
     if (!columns.some((item) => item.name === column)) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+      if (backfill) db.exec(backfill);
     }
   }
 }
