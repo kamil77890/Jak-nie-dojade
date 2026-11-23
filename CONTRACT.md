@@ -540,6 +540,8 @@ Webhook: `400 INVALID_SIGNATURE`; `500`, gdy nie udał się zwrot pieniędzy; `5
 
 #### 11.6.1 Budżet Voucherify: koszt wywołań i przepustowość
 
+**Bonus powitalny w pierwszej korekcie salda:** świeża karta (bez historii, `welcome_pending = 1`) dostaje bonus w tym samym wywołaniu co pierwsze pobranie albo naliczenie (`points = 1000 + delta`, powód `welcome+checkout` / `welcome+purchase`); gdy suma wynosi 0 (nowy klient płaci dokładnie 1000 pkt), korekty nie ma wcale. Gwarancja „bonus dokładnie raz” bez zmian (zajęcie w bazie przed wywołaniem, stan 1/2 po błędzie). Konsekwencje: (1) w historii karty w Voucherify nie ma osobnych wpisów „+1000” i „−1000”; (2) gdy połączona korekta skończy się niepewnym wynikiem (timeout po zapisie), ponowienie nie zdubluje bonusu, ale pobranie albo naliczenie może się powtórzyć — to samo ryzyko co przy każdej korekcie z timeoutem (Voucherify nie ma klucza idempotencji); (3) karta z zerową korektą nie ma historii, więc przy utracie bazy (mapowania) dostałaby bonus ponownie.
+
 **Po oficjalnych kryteriach Etapu III (zmiana domyślnych wartości):** odczyt salda nowego e-maila nie woła już Voucherify, rezerwa checkoutu wzrosła do 55, limity per IP do 30 (odczyty 30 + 20/min, checkout z punktami 30). Symulacja pełnego testu prowadzącego z jednego IP (Etap III z punktami, potem I–II) zmieściła się w 58–73 wywołaniach bez odmów. Opis niżej dotyczy poprzedniego podziału 45/70; obecnie: **odczyt salda do 15**, **checkout do 70** (co najmniej 55 tylko dla niego), **zwroty i naliczenia do 90** (co najmniej 20).
 
 Poprzedni podział budżetu 90/h (okno przesuwne; Sandbox: 100/h): **odczyt salda do 45**, **checkout do 70** (co najmniej 25 tylko dla niego), **zwroty i naliczenia do 90** (co najmniej 20 tylko dla nich). Progi liczą **wszystkie** wywołania w oknie: gdy w ostatniej godzinie poszło już 45 wywołań (jakichkolwiek), odczyty są wstrzymane. Wtedy `GET` dla karty z panelu albo po korekcie w panelu pokaże ostatnie znane saldo (albo 1000 dla e-maila bez mapowania) — obietnica „≤ 15 s” z III.A2 obowiązuje, dopóki godzinne zużycie nie przekroczy 45. Wcześniejszy podział 30/65 wyczerpywał odczyty w kilka minut testu czarnej skrzynki (`s2-timing`), stąd 45/70. Odczyty kończą się pierwsze, a przy ich braku `GET /api/loyalty` nadal odpowiada (cache do 10 min albo 1000 dla e-maila bez karty).
@@ -548,12 +550,12 @@ Poprzedni podział budżetu 90/h (okno przesuwne; Sandbox: 100/h): **odczyt sald
 | --- | --- | --- | --- |
 | `GET /api/loyalty`, e-mail z kartą | 1 na 10 s na e-mail (cache) | | |
 | `GET /api/loyalty`, e-mail bez karty w bazie | 0 (domyślnie); 1 z `LOYALTY_LOOKUP_UNKNOWN_CARDS=true` | | |
-| checkout z punktami, nowy klient (≤ 1000 pkt) | | 3: karta + bonus + pobranie (bonus zwraca saldo, więc bez odczytu) | |
+| checkout z punktami, nowy klient (≤ 1000 pkt) | | 2: karta + jedna korekta `bonus − punkty`; przy dokładnie 1000 pkt korekta wynosi 0, więc **1** (samo założenie karty) | |
 | checkout z punktami, karta jest | | 2: świeży odczyt + pobranie | |
 | checkout z punktami ponad bonus, e-mail bez karty | | 0–1 (wyszukanie; 0, gdy `GET` sprzed ≤ 10 s) → `409` | |
 | odmowa `409` za mało punktów (karta jest) | | 1 | |
 | zmiana liczby punktów przy otwartej sesji | | jak checkout | +1 (zwrot starej sesji) |
-| naliczenie po zakupie | | | 1 (+2: karta + bonus, gdy pierwszy zakup był kartą) |
+| naliczenie po zakupie | | | 1 (+1: założenie karty, gdy pierwszy zakup był kartą — bonus idzie w tej samej korekcie co punkty) |
 | zwrot punktów porzuconej sesji / po odmowie Stripe'a | | | 1 |
 | powtórka checkoutu (ta sama sesja), checkout bez punktów, walidacja | 0 | 0 | 0 |
 
@@ -561,9 +563,9 @@ Pełny zakup:
 
 | Scenariusz | wywołania | zmiana względem poprzedniej wersji |
 | --- | --- | --- |
-| nowy klient przez UI: saldo → checkout 1000 pkt → zapłata → naliczenie | 0 + 3 + 1 = **4** | saldo nowego e-maila bez wywołania (wyszukanie karty domyślnie wyłączone) |
+| nowy klient przez UI: saldo → checkout 1000 pkt → zapłata → naliczenie | 0 + 1 + 1 = **2** | saldo bez wywołania; bonus łączony z pierwszą korektą (1000 − 1000 = 0 → bez korekty) |
 | stały klient przez UI z punktami | 0–1 + 2 + 1 = **3–4** | świeży odczyt zamiast wstępnego sprawdzenia z cache (III.B3); bez `GET` tuż przed — bez zmian |
-| nowy klient płacący kartą | 0 + 0 + 3 = **3** | bez odczytu |
+| nowy klient płacący kartą | 0 + 0 + 2 = **2** | karta + jedna korekta `bonus + punkty za zakup` |
 | stały klient płacący kartą | 0–1 + 0 + 1 = **1–2** | bez zmian |
 | porzucona rezerwacja z punktami (nowy klient) | 1 + 3 + 1 = **5** | zwrot w 15 s zamiast po 31 min, ten sam koszt |
 

@@ -84,10 +84,9 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
 
     expect((await checkout(reservationId, 1000)).statusCode).toBe(200);
 
-    // createMember + bonus + pobranie = 3 wywołania; checkout nie czytał salda.
-    expect(provider.calls.map((call) => call.op)).toEqual(["createMember", "adjustPoints", "adjustPoints"]);
-    expect(provider.calls[1]).toMatchObject({ delta: 1000, reason: "welcome", priority: "checkout" });
-    expect(provider.calls[2]).toMatchObject({ delta: -1000, reason: "checkout", priority: "checkout" });
+    // Nowa karta (saldo 0) + bonus 1000 − pobranie 1000 = 0: tylko createMember, bez korekty
+    // i bez odczytu salda. Bonus i pobranie są łączone w jedną korektę (tu: zerową).
+    expect(provider.calls.map((call) => call.op)).toEqual(["createMember"]);
     expect(accountRow(ctx, "anna@example.com")).toMatchObject({ welcome_pending: 0 });
 
     // Saldo po korekcie jest w cache — odczyt nie woła Voucherify.
@@ -105,11 +104,12 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
     await pay(reservationId);
     expect(await ctx.services.worker.runOnce()).toBe(true);
 
+    // Bonus i punkty za zakup w jednej korekcie: createMember + (1000 + 890).
     expect(provider.calls.map((call) => [call.op, call.priority])).toEqual([
       ["createMember", "critical"],
       ["adjustPoints", "critical"],
-      ["adjustPoints", "critical"],
     ]);
+    expect(provider.calls[1]).toMatchObject({ delta: 1890, reason: "welcome+purchase" });
     expect((await loyalty("anna@example.com")).json<LoyaltyResponse>().points).toBe(1000 + 890);
     expect(provider.count("getBalance")).toBe(0);
   });
@@ -124,7 +124,11 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
     expect(responses.map((response) => response.statusCode)).toEqual([200, 200]);
 
     expect(provider.count("createMember")).toBe(1);
-    expect(provider.calls.filter((call) => call.op === "adjustPoints" && call.reason === "welcome")).toHaveLength(1);
+    // Jeden bonus: pierwszy zapis łączy go z pobraniem (+600), drugi pobiera zwykle (−400).
+    expect(
+      provider.calls.filter((call) => call.op === "adjustPoints" && String(call.reason).startsWith("welcome")),
+    ).toHaveLength(1);
+    expect(provider.calls.filter((call) => call.op === "adjustPoints").map((call) => call.delta)).toEqual([600, -400]);
     expect(await provider.getBalance("anna@example.com")).toBe(200);
   });
 
@@ -153,10 +157,10 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
     ctx = await createTestContext({ loyaltyProvider: provider });
     const reservationId = await reserve();
 
-    expect((await checkout(reservationId, 1000)).statusCode).toBe(200);
-    expect(provider.calls.filter((call) => call.op === "adjustPoints").map((call) => call.delta)).toEqual([
-      1000, -1000,
-    ]);
+    expect((await checkout(reservationId, 400)).statusCode).toBe(200);
+    // Karta bez historii dostaje bonus w tej samej korekcie co pobranie: +1000 − 400.
+    expect(provider.calls.filter((call) => call.op === "adjustPoints").map((call) => call.delta)).toEqual([600]);
+    expect(await provider.getBalance("anna@example.com")).toBe(600);
   });
 
   it("bonus odrzucony na pewno (limit) zostaje należny: odczyt dalej pokazuje 1000, następny zapis go przyznaje", async () => {
@@ -165,7 +169,7 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
     const reservationId = await reserve();
     provider.failNext.adjustPoints = new LoyaltyThrottledError("budżet", 120, "budget");
 
-    const refused = await checkout(reservationId, 1000);
+    const refused = await checkout(reservationId, 400);
     expect(refused.statusCode).toBe(503);
     expect(refused.headers["retry-after"]).toBe("120");
     expect(refused.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 120 });
@@ -176,10 +180,9 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
     expect((await loyalty("anna@example.com")).json<LoyaltyResponse>().points).toBe(1000);
     expect(provider.calls).toEqual([]);
 
-    expect((await checkout(reservationId, 1000)).statusCode).toBe(200);
-    expect(provider.calls.filter((call) => call.op === "adjustPoints").map((call) => call.delta)).toEqual([
-      1000, -1000,
-    ]);
+    expect((await checkout(reservationId, 400)).statusCode).toBe(200);
+    // Bonus i pobranie w jednej korekcie, dokładnie raz.
+    expect(provider.calls.filter((call) => call.op === "adjustPoints").map((call) => call.delta)).toEqual([600]);
     expect(accountRow(ctx, "anna@example.com")).toMatchObject({ welcome_pending: 0 });
   });
 
@@ -189,14 +192,19 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
     const reservationId = await reserve();
     provider.failAfterApply = new LoyaltyProviderError("Voucherify: timeout po 5000 ms", true);
 
-    expect((await checkout(reservationId, 1000)).statusCode).toBe(503);
+    // Połączona korekta +600 (bonus 1000 − 400) doszła, ale odpowiedź nie: wynik niepewny.
+    expect((await checkout(reservationId, 400)).statusCode).toBe(503);
     expect(accountRow(ctx, "anna@example.com")).toMatchObject({ welcome_pending: 2 });
 
     provider.calls = [];
-    expect((await checkout(reservationId, 1000)).statusCode).toBe(200);
+    expect((await checkout(reservationId, 400)).statusCode).toBe(200);
+    // Saldo > 0 → bonus już jest, nie dublujemy go; dalej zwykłe pobranie.
     expect(provider.calls.map((call) => call.op)).toEqual(["getBalance", "adjustPoints"]);
-    expect(provider.calls[1]).toMatchObject({ delta: -1000 });
-    expect(await provider.getBalance("anna@example.com")).toBe(0);
+    expect(provider.calls[1]).toMatchObject({ delta: -400 });
+    expect(provider.calls.filter((call) => call.op === "adjustPoints")).toHaveLength(1);
+    // Znane ograniczenie (jak przy każdym pobraniu z timeoutem — Voucherify nie ma klucza
+    // idempotencji): pobranie z nieudanej próby też doszło, więc saldo to 1000 − 400 − 400.
+    expect(await provider.getBalance("anna@example.com")).toBe(200);
   });
 });
 

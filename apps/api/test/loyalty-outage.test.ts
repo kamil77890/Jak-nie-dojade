@@ -157,6 +157,8 @@ describe("III.X1 — Voucherify leży, a punkty nie przepadają", () => {
   it("zaległy zwrot punktów (refund-points) czeka na Voucherify zamiast DLQ po kilku szybkich próbach", async () => {
     const voucherify = stubVoucherify();
     ctx = await createTestContext({ overrides: { loyalty: voucherifyConfig(), worker: { maxAttempts: 2 } } });
+    // Karta z bonusem już istnieje — pobranie to osobna, ujemna korekta salda.
+    await ctx.services.loyalty.ensureAccount("anna@example.com", "critical");
     const reservationId = await reserve();
 
     // Punkty zeszły, Stripe odmówił sesji, a zwrot od razu się nie udał (Voucherify padł).

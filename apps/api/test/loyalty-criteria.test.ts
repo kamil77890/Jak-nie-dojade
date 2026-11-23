@@ -77,6 +77,10 @@ describe("III.B3 — dwa równoległe checkouty na jednym saldzie", () => {
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const email = `wyscig${attempt}@example.com`;
+      // Stały klient z kartą (1000 pkt): pobranie to prawdziwa korekta −1000, którą
+      // dostawca dopuszczający saldo ujemne przyjąłby także drugi raz.
+      provider.seedCard(email, 1000);
+      seedAccount(ctx, email, email);
       const first = await reserve(email, SEATS[attempt * 2]!);
       const second = await reserve(email, SEATS[attempt * 2 + 1]!);
       expect(await balance(email)).toBe(1000);
@@ -102,7 +106,7 @@ describe("III.B3 — dwa równoległe checkouty na jednym saldzie", () => {
     expect(ctx.payments.sessions.filter((session) => session.input.amount === 7900)).toHaveLength(5);
   });
 
-  it("prawdziwy klient Voucherify (HTTP) przy saldzie ujemnym w Voucherify: jeden 200, jeden 409, koszt 3 + 1 wywołania", async () => {
+  it("prawdziwy klient Voucherify (HTTP) przy saldzie ujemnym w Voucherify: jeden 200, jeden 409, koszt 1 + 1 wywołanie", async () => {
     const voucherify = stubVoucherify();
     voucherify.state.allowNegative = true;
     ctx = await createTestContext({ overrides: { loyalty: voucherifyConfig() } });
@@ -112,11 +116,10 @@ describe("III.B3 — dwa równoległe checkouty na jednym saldzie", () => {
     const responses = await Promise.all([checkout(first, 1000), checkout(second, 1000)]);
     expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
     expect(voucherify.balances.get("CARD-ola@example.com")).toBe(0);
-    // Zwycięzca: karta + bonus + pobranie; przegrany: jeden świeży odczyt salda.
+    // Zwycięzca: tylko założenie karty (bonus 1000 − pobranie 1000 = 0, bez korekty);
+    // przegrany: jeden świeży odczyt salda (0) → 409.
     expect(voucherify.calls.map((call) => `${call.method} ${call.path}`)).toEqual([
       "POST /v1/loyalties/camp_test/members",
-      "POST /v1/loyalties/members/CARD-ola%40example.com/balance",
-      "POST /v1/loyalties/members/CARD-ola%40example.com/balance",
       "GET /v1/loyalties/members/CARD-ola%40example.com",
     ]);
   });
@@ -242,8 +245,10 @@ describe("III.A2 — Voucherify jako źródło prawdy (karta z panelu, świeżo�
     expect(await balance("pusta@example.com")).toBe(1000);
     expect(accountRow(ctx, "pusta@example.com")).toMatchObject({ welcome_pending: 1 });
     const reservationId = await reserve("pusta@example.com", "5-1");
-    expect((await checkout(reservationId, 1000)).statusCode).toBe(200);
-    expect(provider.calls.filter((call) => call.op === "adjustPoints").map((call) => call.delta)).toEqual([1000, -1000]);
+    expect((await checkout(reservationId, 400)).statusCode).toBe(200);
+    // Bonus raz, w tej samej korekcie co pobranie: +1000 − 400.
+    expect(provider.calls.filter((call) => call.op === "adjustPoints").map((call) => call.delta)).toEqual([600]);
+    expect(accountRow(ctx, "pusta@example.com")).toMatchObject({ welcome_pending: 0 });
     expect(provider.count("createMember")).toBe(0);
   });
 
@@ -362,10 +367,9 @@ describe("koszt wywołań Voucherify na zakup (CONTRACT.md §11.6)", () => {
     await pay(reservationId);
     expect(await ctx.services.worker.runOnce()).toBe(true);
 
+    // Bonus łączony z pobraniem (1000 − 1000 = 0 → bez korekty): 1 checkout + 1 krytyczne.
     expect(provider.calls.map((call) => `${call.op}:${call.priority}`)).toEqual([
       "createMember:checkout",
-      "adjustPoints:checkout",
-      "adjustPoints:checkout",
       "adjustPoints:critical",
     ]);
     expect(await balance("nowy@example.com")).toBe(790);

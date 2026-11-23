@@ -445,6 +445,8 @@ export class OverdrawnError extends InsufficientPointsError {
  */
 export class LoyaltyService {
   private readonly pending = new Map<string, Promise<LoyaltyAccount>>();
+  /** Zakładanie karty bez bonusu (`openCard`) — równoległe zapisy czekają na to samo. */
+  private readonly opening = new Map<string, Promise<LoyaltyAccount>>();
   private readonly cache = new Map<string, CacheEntry>();
   /** E-mail → kiedy Voucherify potwierdził, że karty nie ma. */
   private readonly noCard = new Map<string, number>();
@@ -559,17 +561,15 @@ export class LoyaltyService {
    * Zwraca nowe saldo; `OverdrawnError`, gdy mimo to zeszło poniżej zera.
    */
   async spendPoints(lock: SpendLock, points: number): Promise<number> {
-    const account = await this.ensureAccount(lock.email, "checkout");
+    const account = await this.openCard(lock.email, "checkout");
     if ((await this.spendableBalance(account, lock)) < points) throw new InsufficientPointsError();
     let balance: number;
     try {
-      balance = await this.provider.adjustPoints(account.memberId, -points, "checkout", "checkout");
+      balance = await this.adjustWithWelcome(account, -points, "checkout", "checkout");
     } catch (error) {
-      this.forget(account.email);
       if (error instanceof LoyaltyProviderError && error.insufficient) throw new InsufficientPointsError();
       throw asUnavailable(error);
     }
-    this.remember(account.email, balance);
     if (balance < 0) throw new OverdrawnError(points);
     return balance;
   }
@@ -580,14 +580,98 @@ export class LoyaltyService {
    */
   async awardPoints(email: string, points: number): Promise<number> {
     if (points <= 0) return 0;
-    const account = await this.ensureAccount(email, "critical");
+    const account = await this.openCard(email, "critical");
     try {
-      const balance = await this.provider.adjustPoints(account.memberId, points, "purchase", "critical");
-      this.remember(account.email, balance);
+      return await this.adjustWithWelcome(account, points, "purchase", "critical");
+    } catch (error) {
+      throw asUnavailable(error);
+    }
+  }
+
+  /**
+   * Karta do zapisu BEZ przyznawania bonusu: zakłada ją albo odnajduje (createMember),
+   * ale bonus (`welcome_pending = 1`) zostawia do `adjustWithWelcome`, który dolicza go
+   * do pierwszej korekty salda — jedno wywołanie Voucherify mniej na nowego klienta.
+   */
+  private async openCard(email: string, priority: LoyaltyPriority): Promise<LoyaltyAccount> {
+    const normalized = normalizeEmail(email);
+    const existing = this.findAccount(normalized);
+    if (existing) return existing;
+
+    const inFlight = this.opening.get(normalized);
+    if (inFlight) return inFlight;
+
+    const opened = (async () => {
+      if (!this.findAccount(normalized)) {
+        let member: MemberLookup;
+        try {
+          member = await this.provider.createMember(normalized, priority);
+        } catch (error) {
+          throw asUnavailable(error);
+        }
+        this.adopt(normalized, member);
+      }
+      const account = this.findAccount(normalized);
+      if (!account) throw new LoyaltyUnavailableError(new Error("Brak mapowania konta po zapisie."));
+      return account;
+    })().finally(() => this.opening.delete(normalized));
+    this.opening.set(normalized, opened);
+    return opened;
+  }
+
+  /**
+   * Korekta salda z bonusem powitalnym w tym samym wywołaniu, gdy bonus jest należny
+   * (świeża karta bez historii, `welcome_pending = 1`): `welcome + delta` zamiast dwóch
+   * osobnych korekt. „Dokładnie raz” bez zmian: bonus najpierw zajmujemy w bazie
+   * (UPDATE … WHERE welcome_pending = 1), a po błędzie przywracamy 1 (korekta na pewno
+   * nie doszła) albo 2 (wynik niepewny). Stan 2 obsługuje dotychczasowa ścieżka
+   * `grantWelcome`: saldo > 0 = bonus już jest. Połączona korekta zawsze zostawia saldo
+   * > 0 (pobranie ≤ bonus sprawdza faza 1, naliczenie tylko dodaje) albo — gdy pobranie
+   * równa się bonusowi — nie woła Voucherify wcale (karta bez historii ma 0, wynik też 0),
+   * więc niepewność nie może pomylić „bonus był” z „bonusu nie było”.
+   */
+  private async adjustWithWelcome(
+    account: LoyaltyAccount,
+    delta: number,
+    reason: "checkout" | "purchase",
+    priority: LoyaltyPriority,
+  ): Promise<number> {
+    let current: LoyaltyAccount = account;
+    if (current.welcomePending === 1 && this.welcomePoints > 0) {
+      const claimed = this.db
+        .prepare("UPDATE loyalty_accounts SET welcome_pending = 0 WHERE email = ? AND welcome_pending = 1")
+        .run(current.email);
+      if (Number(claimed.changes) > 0) {
+        const total = this.welcomePoints + delta;
+        try {
+          const balance =
+            total === 0
+              ? 0
+              : await this.provider.adjustPoints(current.memberId, total, `welcome+${reason}`, priority);
+          this.remember(current.email, balance);
+          this.markWelcomed(current.email);
+          return balance;
+        } catch (error) {
+          this.forget(current.email);
+          const state: WelcomeState = isDefinitelyNotApplied(error) ? 1 : 2;
+          this.db
+            .prepare("UPDATE loyalty_accounts SET welcome_pending = ? WHERE email = ? AND welcome_pending = 0")
+            .run(state, current.email);
+          throw error;
+        }
+      }
+      // Bonus zajął w międzyczasie inny zapis — dalej zwykła korekta.
+      current = this.findAccount(current.email) ?? current;
+    }
+    if (current.welcomePending !== 0) await this.grantWelcome(current, priority);
+
+    try {
+      const balance = await this.provider.adjustPoints(current.memberId, delta, reason, priority);
+      this.remember(current.email, balance);
       return balance;
     } catch (error) {
-      this.forget(account.email);
-      throw asUnavailable(error);
+      this.forget(current.email);
+      throw error;
     }
   }
 
@@ -688,7 +772,9 @@ export class LoyaltyService {
       )
       .run(email, found.memberId, nowIso, nowIso, owed ? 1 : 0);
     this.noCard.delete(email);
-    if (found.balance !== undefined) this.remember(email, found.balance);
+    // Karta bez historii punktów ma saldo 0 — bez odczytu (oszczędza wywołanie w checkoucie).
+    const known = found.balance ?? (found.hasHistory ? undefined : 0);
+    if (known !== undefined) this.remember(email, known);
     const account = this.findAccount(email);
     if (!account) throw new LoyaltyUnavailableError(new Error("Brak mapowania konta po zapisie."));
     return account;
