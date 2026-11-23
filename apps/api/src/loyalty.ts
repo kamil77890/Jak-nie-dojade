@@ -16,6 +16,15 @@ import {
  */
 export type LoyaltyPriority = BudgetPriority;
 
+/** Karta znaleziona albo założona w Voucherify. */
+export interface MemberLookup {
+  memberId: string;
+  /** Karta już kiedyś dostała punkty, więc bonus powitalny był przyznany. */
+  hasHistory: boolean;
+  /** Saldo z tej samej odpowiedzi (jeśli dostawca je podał) — bez dodatkowego wywołania. */
+  balance?: number;
+}
+
 /**
  * Klient programu lojalnościowego. Kontrakt jest mały, bo Voucherify ma być
  * jedynym źródłem prawdy o saldzie: my tylko mapujemy e-mail na kartę.
@@ -26,7 +35,12 @@ export interface LoyaltyProvider {
    * Tworzy kartę lojalnościową (albo odnajduje istniejącą) i zwraca jej kod.
    * `hasHistory` = karta już kiedyś dostała punkty, więc bonus powitalny był przyznany.
    */
-  createMember(email: string, priority?: LoyaltyPriority): Promise<{ memberId: string; hasHistory?: boolean }>;
+  createMember(email: string, priority?: LoyaltyPriority): Promise<MemberLookup>;
+  /**
+   * Szuka istniejącej karty klienta (np. założonej w panelu albo w kasie) bez zakładania
+   * nowej. Brak metody = dostawca nie umie szukać, traktujemy to jak „brak karty”.
+   */
+  findMember?(email: string, priority?: LoyaltyPriority): Promise<MemberLookup | null>;
   /** Saldo punktów karty (1 punkt = 1 grosz). */
   getBalance(memberId: string, priority?: LoyaltyPriority): Promise<number>;
   /** Dodaje (delta > 0) albo odejmuje (delta < 0) punkty; zwraca nowe saldo. */
@@ -103,10 +117,7 @@ export class VoucherifyLoyaltyProvider implements LoyaltyProvider {
     },
   ) {}
 
-  async createMember(
-    email: string,
-    priority: LoyaltyPriority = "checkout",
-  ): Promise<{ memberId: string; hasHistory: boolean }> {
+  async createMember(email: string, priority: LoyaltyPriority = "checkout"): Promise<MemberLookup> {
     try {
       // Ponowienie po timeoucie jest bezpieczne: drugie założenie tej samej karty
       // kończy się 400, a findMember odnajdzie kartę (bez historii → bonus należny).
@@ -117,7 +128,7 @@ export class VoucherifyLoyaltyProvider implements LoyaltyProvider {
         priority,
         true,
       );
-      if (body.code) return { memberId: body.code, hasHistory: hasHistory(body) };
+      if (body.code) return toLookup(body.code, body);
     } catch (error) {
       // Karta już istnieje (np. DB po migracji nie ma mapowania) — znajdź ją po kliencie.
       if (error instanceof LoyaltyProviderError && error.status === 400) {
@@ -166,11 +177,12 @@ export class VoucherifyLoyaltyProvider implements LoyaltyProvider {
     return this.getBalance(memberId, priority);
   }
 
-  /** Lista członków kampanii filtrowana po kliencie — ratunek, gdy zgubimy mapowanie. */
-  private async findMember(
-    email: string,
-    priority: LoyaltyPriority,
-  ): Promise<{ memberId: string; hasHistory: boolean } | null> {
+  /**
+   * Lista członków kampanii filtrowana po kliencie (`customer` = source_id = e-mail):
+   * karta założona poza sklepem (panel, kasa) albo zgubione mapowanie. Odpowiedź niesie
+   * `loyalty_card.balance`, więc saldo znamy bez drugiego wywołania.
+   */
+  async findMember(email: string, priority: LoyaltyPriority = "read"): Promise<MemberLookup | null> {
     const body = await this.request<{ data?: VoucherifyMember[]; vouchers?: VoucherifyMember[] }>(
       "GET",
       `/v1/loyalties/${encodeURIComponent(this.options.campaignId)}/members?customer=${encodeURIComponent(email)}&limit=1`,
@@ -179,7 +191,7 @@ export class VoucherifyLoyaltyProvider implements LoyaltyProvider {
       true,
     );
     const first = body.data?.[0] ?? body.vouchers?.[0];
-    return first?.code ? { memberId: first.code, hasHistory: hasHistory(first) } : null;
+    return first?.code ? toLookup(first.code, first) : null;
   }
 
   private async request<T>(
@@ -307,15 +319,36 @@ function hasHistory(member: VoucherifyMember): boolean {
   return (card?.points ?? 0) > 0 || (card?.balance ?? 0) > 0;
 }
 
-/** Lokalny dostawca dla dev/testów: saldo w pamięci procesu, bez limitu wywołań. */
+function toLookup(code: string, member: VoucherifyMember): MemberLookup {
+  const balance = member.loyalty_card?.balance;
+  return {
+    memberId: code,
+    hasHistory: hasHistory(member),
+    ...(typeof balance === "number" ? { balance: Math.trunc(balance) } : {}),
+  };
+}
+
+/**
+ * Lokalny dostawca dla dev/testów: saldo w pamięci procesu, bez limitu wywołań.
+ * `allowNegative` udaje dostawcę, który NIE odrzuca salda poniżej zera — nasza logika
+ * nie może na tym polegać (test wyścigu dwóch checkoutów na jednym saldzie).
+ */
 export class MemoryLoyaltyProvider implements LoyaltyProvider {
   readonly name = "memory" as const;
-  private readonly balances = new Map<string, number>();
-  private readonly credited = new Set<string>();
+  protected readonly balances = new Map<string, number>();
+  protected readonly credited = new Set<string>();
 
-  async createMember(email: string): Promise<{ memberId: string; hasHistory: boolean }> {
+  constructor(private readonly options: { allowNegative?: boolean } = {}) {}
+
+  async createMember(email: string): Promise<MemberLookup> {
     if (!this.balances.has(email)) this.balances.set(email, 0);
     return { memberId: email, hasHistory: this.credited.has(email) };
+  }
+
+  async findMember(email: string): Promise<MemberLookup | null> {
+    const balance = this.balances.get(email);
+    if (balance === undefined) return null;
+    return { memberId: email, hasHistory: this.credited.has(email) || balance !== 0, balance };
   }
 
   async getBalance(memberId: string): Promise<number> {
@@ -324,7 +357,9 @@ export class MemoryLoyaltyProvider implements LoyaltyProvider {
 
   async adjustPoints(memberId: string, delta: number, _reason: string): Promise<number> {
     const next = (this.balances.get(memberId) ?? 0) + delta;
-    if (next < 0) throw new LoyaltyProviderError("Za mało punktów.", false, 400, true);
+    if (next < 0 && !this.options.allowNegative) {
+      throw new LoyaltyProviderError("Za mało punktów.", false, 400, true);
+    }
     this.balances.set(memberId, next);
     if (delta > 0) this.credited.add(memberId);
     return next;
@@ -349,6 +384,8 @@ interface LoyaltyAccountRow {
 interface CacheEntry {
   points: number;
   at: number;
+  /** Numer kolejny zapisu: wpis jest „świeży pod blokadą”, gdy powstał po jej wzięciu. */
+  seq: number;
 }
 
 export interface LoyaltyServiceOptions {
@@ -356,8 +393,31 @@ export interface LoyaltyServiceOptions {
   cacheTtlMs?: number;
   /** Do jakiego wieku stary odczyt może zastąpić 503 przy samym wyświetlaniu salda. */
   staleTtlMs?: number;
+  /** Jak długo pamiętamy, że e-mail nie ma karty w Voucherify (0 = pytamy za każdym razem). */
+  noCardTtlMs?: number;
   /** Górna granica wpisów — cache nie może zjeść pamięci przy zalewie różnych e-maili. */
   maxCacheEntries?: number;
+}
+
+/**
+ * Blokada pobrań punktów jednego e-maila (`LoyaltyService.withSpendLock`).
+ * `since` = numer ostatniego zapisu cache w chwili wzięcia blokady.
+ */
+export interface SpendLock {
+  readonly email: string;
+  readonly since: number;
+}
+
+/**
+ * Pobranie zeszło poniżej zera, choć saldo sprawdziliśmy tuż przed nim pod blokadą:
+ * dostawca przyjął ujemne saldo, a ktoś poza naszym procesem (panel, druga instancja)
+ * wydał punkty w międzyczasie. Punkty trzeba oddać; dla klienta to 409 INSUFFICIENT_POINTS.
+ */
+export class OverdrawnError extends InsufficientPointsError {
+  constructor(public readonly points: number) {
+    super();
+    this.name = "OverdrawnError";
+  }
 }
 
 /**
@@ -365,19 +425,27 @@ export interface LoyaltyServiceOptions {
  * (1000 punktów) i operacje na saldzie. Baza trzyma wyłącznie `member_id`.
  *
  * Oszczędzanie limitu Voucherify (Sandbox: 100 wywołań/h):
- * - odczyt salda NIE zakłada karty: e-mail bez mapowania ma z definicji bonus powitalny,
- *   kartę i bonus zakładamy leniwie przy pierwszym zapisie (pobranie albo naliczenie punktów),
+ * - odczyt salda NIE zakłada karty. E-mail bez mapowania kosztuje jedno wyszukanie
+ *   karty (mogła powstać w panelu albo w kasie); „brak karty” pamiętamy `noCardTtlMs`,
+ *   a bez budżetu odczytów pokazujemy bonus powitalny bez pytania,
+ * - kartę i bonus zakładamy leniwie przy pierwszym zapisie (pobranie albo naliczenie punktów),
  * - krótki cache salda w pamięci procesu. To tylko optymalizacja odczytu — źródłem prawdy
  *   pozostaje Voucherify, a saldo może zmienić się poza nami (np. korekta marketingu
  *   w panelu), stąd krótki TTL. Każda nasza korekta zwraca nowe saldo i od razu
- *   nadpisuje wpis; nieudana korekta (wynik nieznany) usuwa go.
+ *   nadpisuje wpis; nieudana korekta (wynik nieznany) usuwa go. Checkout cache nie używa:
+ *   decyduje świeży odczyt pod blokadą e-maila (`withSpendLock`).
  */
 export class LoyaltyService {
   private readonly pending = new Map<string, Promise<LoyaltyAccount>>();
   private readonly cache = new Map<string, CacheEntry>();
+  /** E-mail → kiedy Voucherify potwierdził, że karty nie ma. */
+  private readonly noCard = new Map<string, number>();
+  private readonly spendLocks = new Map<string, Promise<unknown>>();
   private readonly cacheTtlMs: number;
   private readonly staleTtlMs: number;
+  private readonly noCardTtlMs: number;
   private readonly maxCacheEntries: number;
+  private seq = 0;
   private hits = 0;
   private misses = 0;
   private staleServed = 0;
@@ -391,6 +459,7 @@ export class LoyaltyService {
   ) {
     this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 0);
     this.staleTtlMs = Math.max(this.cacheTtlMs, options.staleTtlMs ?? 0);
+    this.noCardTtlMs = Math.max(0, options.noCardTtlMs ?? 0);
     this.maxCacheEntries = Math.max(1, options.maxCacheEntries ?? 10_000);
   }
 
@@ -402,35 +471,93 @@ export class LoyaltyService {
    * Saldo do wyświetlenia (`GET /api/loyalty`). Najniższy priorytet budżetu; gdy
    * Voucherify jest niedostępny albo budżet się skończył, oddaje niedawny odczyt
    * z cache (do `staleTtlMs`), a bez niego rzuca 503 LOYALTY_UNAVAILABLE.
+   *
+   * E-mail bez mapowania: jedno wyszukanie karty w Voucherify. Jest karta (panel, kasa,
+   * zgubione mapowanie) → zapisujemy mapowanie i pokazujemy jej saldo. Nie ma → bonus
+   * powitalny. Brak budżetu odczytów albo awaria → też bonus powitalny, bez 503: tak
+   * odpowiadaliśmy zawsze nowemu klientowi, a checkout i tak sprawdza prawdziwą kartę
+   * przed pobraniem (najwyżej odmówi 409), więc nic nie zostanie wydane „na kredyt”.
    */
   async readBalance(email: string): Promise<number> {
-    return this.balanceFor(email, "read", true);
+    const normalized = normalizeEmail(email);
+    if (!this.findAccount(normalized) && !(await this.adoptForRead(normalized))) {
+      return this.welcomePoints;
+    }
+    return this.balanceFor(normalized);
   }
 
   /**
-   * Saldo przed pobraniem punktów w checkoucie. Świeży cache wystarczy: to tylko
-   * wstępne sprawdzenie, bo samo pobranie jest atomowe w Voucherify (brak punktów →
-   * 400 → 409 INSUFFICIENT_POINTS, bez częściowych zapisów). Zawyżony cache kończy
-   * się więc tą samą odmową, tylko o jedno wywołanie później; zaniżony (ktoś dodał
-   * punkty poza nami w ciągu TTL) — odmową, którą klient ponowi po TTL.
-   * Bez starego cache: przy błędzie checkout ma dostać 503, nie stare dane.
+   * Blokada pobrań punktów jednego e-maila (w obrębie procesu): świeży odczyt salda
+   * i pobranie idą jedno po drugim, więc dwa równoległe checkouty na jednym saldzie
+   * nie przejdą oba — nawet gdy dostawca przyjmuje saldo ujemne. Zwroty i naliczenia
+   * tylko dodają punkty, więc blokady nie potrzebują (najwyżej zwiększą saldo).
    */
-  async getBalance(email: string): Promise<number> {
-    return this.balanceFor(email, "checkout", false);
+  async withSpendLock<T>(email: string, fn: (lock: SpendLock) => Promise<T>): Promise<T> {
+    const normalized = normalizeEmail(email);
+    const previous = this.spendLocks.get(normalized) ?? Promise.resolve();
+    const start = () => fn({ email: normalized, since: this.seq });
+    const run = previous.then(start, start);
+    const tail = run.catch(() => undefined);
+    this.spendLocks.set(normalized, tail);
+    void tail.then(() => {
+      if (this.spendLocks.get(normalized) === tail) this.spendLocks.delete(normalized);
+    });
+    return run;
   }
 
-  /** Odejmuje punkty; przy braku salda rzuca 409 INSUFFICIENT_POINTS. */
-  async spendPoints(email: string, points: number): Promise<number> {
-    const account = await this.ensureAccount(email, "checkout");
+  /**
+   * Faza 1 checkoutu (pod blokadą, zanim ruszymy cokolwiek u Stripe'a): czy klient ma
+   * `needed` punktów. Saldo karty czytamy świeżo z Voucherify — cache się nie liczy,
+   * chyba że wpis powstał już pod tą blokadą. Nic nie zapisuje; rzuca 409 albo 503.
+   *
+   * E-mail bez karty ma z definicji bonus powitalny. Voucherify pytamy dopiero, gdy klient
+   * chce więcej niż bonus (może mieć kartę z panelu z wyższym saldem). Gdy chce najwyżej
+   * bonus, kartę i jej prawdziwe saldo sprawdzi faza 2 (`spendPoints`) przed pobraniem —
+   * to samo wywołanie, które i tak zakłada kartę, więc bez dodatkowego kosztu.
+   */
+  async assertCanSpend(lock: SpendLock, needed: number): Promise<void> {
+    if (needed <= 0) return;
+    let account = this.findAccount(lock.email);
+    if (!account) {
+      if (needed <= this.welcomePoints) return;
+      if (this.noCardFresh(lock.email)) throw new InsufficientPointsError();
+      let found: MemberLookup | null;
+      try {
+        found = await this.findMember(lock.email, "checkout");
+      } catch (error) {
+        throw asUnavailable(error);
+      }
+      if (!found) {
+        this.rememberNoCard(lock.email);
+        throw new InsufficientPointsError();
+      }
+      account = this.adopt(lock.email, found);
+    }
+    if ((await this.spendableBalance(account, lock)) < needed) throw new InsufficientPointsError();
+  }
+
+  /**
+   * Faza 2 checkoutu (pod tą samą blokadą, tuż przed sesją Stripe'a): zakłada kartę
+   * i bonus, jeśli trzeba, jeszcze raz porównuje saldo z `points` i pobiera punkty.
+   * Ponowne porównanie zwykle nic nie kosztuje — odczyt z fazy 1 albo wynik bonusu są
+   * już „świeże pod blokadą”; wywołanie jest potrzebne tylko, gdy faza 1 nie pytała
+   * Voucherify, a karta okazała się istniejąca (założona poza sklepem).
+   * Zwraca nowe saldo; `OverdrawnError`, gdy mimo to zeszło poniżej zera.
+   */
+  async spendPoints(lock: SpendLock, points: number): Promise<number> {
+    const account = await this.ensureAccount(lock.email, "checkout");
+    if ((await this.spendableBalance(account, lock)) < points) throw new InsufficientPointsError();
+    let balance: number;
     try {
-      const balance = await this.provider.adjustPoints(account.memberId, -points, "checkout", "checkout");
-      this.remember(account.email, balance);
-      return balance;
+      balance = await this.provider.adjustPoints(account.memberId, -points, "checkout", "checkout");
     } catch (error) {
       this.forget(account.email);
       if (error instanceof LoyaltyProviderError && error.insufficient) throw new InsufficientPointsError();
       throw asUnavailable(error);
     }
+    this.remember(account.email, balance);
+    if (balance < 0) throw new OverdrawnError(points);
+    return balance;
   }
 
   /**
@@ -477,11 +604,9 @@ export class LoyaltyService {
     };
   }
 
-  private async balanceFor(email: string, priority: LoyaltyPriority, allowStale: boolean): Promise<number> {
-    const normalized = normalizeEmail(email);
+  private async balanceFor(normalized: string): Promise<number> {
     const account = this.findAccount(normalized);
-    // Kto jeszcze nic nie kupił (brak karty albo bonus wciąż należny), ma z definicji
-    // bonus powitalny — bez wywołania Voucherify i bez zakładania karty.
+    // Bonus wciąż należny (karta bez historii): klient ma z definicji bonus powitalny.
     if (!account || account.welcomePending === 1) return this.welcomePoints;
 
     const display = (raw: number) =>
@@ -496,42 +621,97 @@ export class LoyaltyService {
     this.misses += 1;
 
     try {
-      const raw = await this.provider.getBalance(account.memberId, priority);
+      const raw = await this.provider.getBalance(account.memberId, "read");
       this.remember(normalized, raw);
       return display(raw);
     } catch (error) {
-      if (allowStale) {
-        const stale = this.cached(normalized, this.staleTtlMs);
-        if (stale !== null) {
-          this.staleServed += 1;
-          return display(stale);
-        }
+      const stale = this.cached(normalized, this.staleTtlMs);
+      if (stale !== null) {
+        this.staleServed += 1;
+        return display(stale);
       }
       throw asUnavailable(error);
     }
   }
 
+  /** Odczyt dla e-maila bez mapowania: true = karta istnieje i ma już mapowanie. */
+  private async adoptForRead(email: string): Promise<boolean> {
+    if (this.noCardFresh(email)) return false;
+    let found: MemberLookup | null;
+    try {
+      found = await this.findMember(email, "read");
+    } catch {
+      // Brak budżetu odczytów, 429 albo awaria: jak dla nowego klienta (patrz readBalance).
+      return false;
+    }
+    if (!found) {
+      this.rememberNoCard(email);
+      return false;
+    }
+    this.adopt(email, found);
+    return true;
+  }
+
+  private async findMember(email: string, priority: LoyaltyPriority): Promise<MemberLookup | null> {
+    if (!this.provider.findMember) return null;
+    return this.provider.findMember(email, priority);
+  }
+
+  /**
+   * Zapisuje mapowanie karty znalezionej albo założonej w Voucherify. Karta z historią
+   * punktów dostała już bonus (Voucherify jest źródłem prawdy, nie dublujemy go); karta
+   * bez historii ma bonus należny (`welcome_pending = 1`), przyzna go pierwszy zapis.
+   * Wyścig dwóch instancji: wygrywa ten, kto pierwszy zapisał mapowanie.
+   */
+  private adopt(email: string, found: MemberLookup): LoyaltyAccount {
+    const owed = this.welcomePoints > 0 && !found.hasHistory;
+    const nowIso = new Date(this.clock()).toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO loyalty_accounts (email, member_id, welcomed_at, created_at, welcome_pending)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (email) DO NOTHING`,
+      )
+      .run(email, found.memberId, nowIso, nowIso, owed ? 1 : 0);
+    this.noCard.delete(email);
+    if (found.balance !== undefined) this.remember(email, found.balance);
+    const account = this.findAccount(email);
+    if (!account) throw new LoyaltyUnavailableError(new Error("Brak mapowania konta po zapisie."));
+    return account;
+  }
+
+  /**
+   * Saldo, które klient może wydać, bez cache sprzed blokady: wpis zapisany po jej
+   * wzięciu (nasz odczyt, wynik bonusu, zwrot) jest aktualny, starszy — nie.
+   */
+  private async spendableBalance(account: LoyaltyAccount, lock: SpendLock): Promise<number> {
+    let raw: number;
+    const entry = this.cache.get(account.email);
+    if (entry && entry.seq > lock.since) {
+      raw = entry.points;
+    } else {
+      try {
+        raw = await this.provider.getBalance(account.memberId, "checkout");
+      } catch (error) {
+        this.forget(account.email);
+        throw asUnavailable(error);
+      }
+      this.remember(account.email, raw);
+    }
+    if (account.welcomePending === 1) return raw + this.welcomePoints;
+    if (account.welcomePending === 2 && raw === 0) return this.welcomePoints;
+    return raw;
+  }
+
   private async openAccount(email: string, priority: LoyaltyPriority): Promise<LoyaltyAccount> {
     if (!this.findAccount(email)) {
-      let member: { memberId: string; hasHistory?: boolean };
+      let member: MemberLookup;
       try {
         member = await this.provider.createMember(email, priority);
       } catch (error) {
         throw asUnavailable(error);
       }
-
-      // Karta, która już ma historię punktów (np. baza straciła mapowanie), dostała
-      // bonus przy założeniu — Voucherify jest źródłem prawdy, nie dublujemy go.
-      const owed = this.welcomePoints > 0 && !member.hasHistory;
-      const nowIso = new Date(this.clock()).toISOString();
-      // Wyścig dwóch instancji: wygrywa ten, kto pierwszy zapisał mapowanie.
-      this.db
-        .prepare(
-          `INSERT INTO loyalty_accounts (email, member_id, welcomed_at, created_at, welcome_pending)
-           VALUES (?, ?, ?, ?, ?)
-           ON CONFLICT (email) DO NOTHING`,
-        )
-        .run(email, member.memberId, nowIso, nowIso, owed ? 1 : 0);
+      this.adopt(email, member);
     }
 
     const account = this.findAccount(email);
@@ -558,7 +738,7 @@ export class LoyaltyService {
     try {
       if (account.welcomePending === 2) {
         // Świeży odczyt z cache jest późniejszy niż nieudana próba (błąd czyści cache),
-        // więc wystarczy — checkout właśnie przeczytał saldo przy wstępnym sprawdzeniu.
+        // więc wystarczy — checkout właśnie przeczytał saldo w fazie 1.
         let current = this.cached(account.email, this.cacheTtlMs);
         if (current === null) {
           current = await this.provider.getBalance(account.memberId, priority);
@@ -597,19 +777,29 @@ export class LoyaltyService {
   }
 
   private remember(email: string, points: number): void {
-    if (this.staleTtlMs <= 0) return;
+    // Wpis powstaje także przy wyłączonym cache odczytów: checkout potrzebuje wiedzieć,
+    // czy saldo jest świeże pod blokadą (`seq`). Rozmiar mapy i tak jest ograniczony.
+    this.seq += 1;
     // delete + set przesuwa wpis na koniec — najstarsze wpisy są na początku mapy.
     this.cache.delete(email);
-    this.cache.set(email, { points, at: this.clock() });
-    while (this.cache.size > this.maxCacheEntries) {
-      const oldest = this.cache.keys().next().value;
-      if (oldest === undefined) break;
-      this.cache.delete(oldest);
-    }
+    this.cache.set(email, { points, at: this.clock(), seq: this.seq });
+    trimOldest(this.cache, this.maxCacheEntries);
   }
 
   private forget(email: string): void {
     this.cache.delete(email);
+  }
+
+  private noCardFresh(email: string): boolean {
+    const at = this.noCard.get(email);
+    return at !== undefined && this.clock() - at < this.noCardTtlMs;
+  }
+
+  private rememberNoCard(email: string): void {
+    if (this.noCardTtlMs <= 0) return;
+    this.noCard.delete(email);
+    this.noCard.set(email, this.clock());
+    trimOldest(this.noCard, this.maxCacheEntries);
   }
 
   private findAccount(email: string): LoyaltyAccount | null {
@@ -623,6 +813,15 @@ export class LoyaltyService {
       memberId: row.member_id,
       welcomePending: pending === 1 || pending === 2 ? pending : 0,
     };
+  }
+}
+
+/** Mapy jako LRU: najstarsze wpisy są na początku, nadmiar odcinamy. */
+function trimOldest(map: Map<string, unknown>, max: number): void {
+  while (map.size > max) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) break;
+    map.delete(oldest);
   }
 }
 

@@ -59,7 +59,7 @@ async function pay(reservationId: string): Promise<void> {
 }
 
 describe("odczyt salda nie zakłada karty w Voucherify", () => {
-  it("nowy e-mail: 1000 punktów bez żadnego wywołania i bez wiersza w bazie", async () => {
+  it("nowy e-mail: 1000 punktów, jedno wyszukanie karty (odczyt), bez zakładania karty i wiersza w bazie", async () => {
     const provider = new CountingLoyaltyProvider();
     ctx = await createTestContext({ loyaltyProvider: provider });
 
@@ -70,7 +70,13 @@ describe("odczyt salda nie zakłada karty w Voucherify", () => {
       expect(response.json<LoyaltyResponse>()).toEqual({ email, points: 1000 });
     }
 
-    expect(provider.calls).toEqual([]);
+    // Powtórka tego samego adresu w ciągu LOYALTY_NO_CARD_CACHE_SECONDS nie pyta drugi raz.
+    expect(provider.calls.map((call) => [call.op, call.priority])).toEqual([
+      ["findMember", "read"],
+      ["findMember", "read"],
+      ["findMember", "read"],
+    ]);
+    expect(provider.count("createMember")).toBe(0);
     expect(accountRow(ctx, "jan@wp.pl")).toBeUndefined();
     expect(accountRow(ctx, "jan@wp.pl.com")).toBeUndefined();
   });
@@ -247,7 +253,7 @@ describe("cache salda — optymalizacja odczytu, źródłem prawdy jest Voucheri
     expect(provider.count("getBalance")).toBe(2);
   });
 
-  it("checkout korzysta ze świeżego cache; za mało punktów i tak zatrzymuje atomowe pobranie", async () => {
+  it("checkout nie ufa cache: świeży odczyt tuż przed pobraniem odmawia bez żadnego zapisu", async () => {
     const provider = await withExistingCard(1500);
     expect((await loyalty("anna@example.com")).json<LoyaltyResponse>().points).toBe(1500);
     // Ktoś wydał punkty poza naszym procesem — cache wciąż mówi 1500.
@@ -258,10 +264,15 @@ describe("cache salda — optymalizacja odczytu, źródłem prawdy jest Voucheri
     const response = await checkout(reservationId, 1000);
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ error: "INSUFFICIENT_POINTS" });
-    // Wstępne sprawdzenie z cache, potem atomowa korekta w Voucherify odmówiła.
-    expect(provider.calls.map((call) => call.op)).toEqual(["adjustPoints"]);
+    // Jedno wywołanie (świeże saldo) zamiast cache — i żadnej korekty salda.
+    expect(provider.calls.map((call) => call.op)).toEqual(["getBalance"]);
     expect(ctx.payments.sessions).toHaveLength(0);
     expect(await provider.getBalance("anna@example.com")).toBe(100);
+
+    // Saldo wystarczające: świeży odczyt + pobranie = 2 wywołania, bez drugiego odczytu.
+    provider.calls = [];
+    expect((await checkout(reservationId, 100)).statusCode).toBe(200);
+    expect(provider.calls.map((call) => call.op)).toEqual(["getBalance", "adjustPoints"]);
   });
 
   it("Voucherify padł: wyświetlanie dostaje niedawne saldo, checkout — 503, nie stare dane", async () => {
@@ -292,7 +303,7 @@ describe("budżet wywołań Voucherify w aplikacji (Sandbox: 100/h)", () => {
     const voucherify = stubVoucherify();
     ctx = await createTestContext({
       overrides: {
-        loyalty: voucherifyConfig({ hourlyBudget: 4, reserveCritical: 1, reserveCheckout: 1 }),
+        loyalty: voucherifyConfig({ hourlyBudget: 5, reserveCritical: 1, reserveCheckout: 2 }),
       },
     });
     for (const name of ["anna", "bartek", "celina"]) {
@@ -308,11 +319,13 @@ describe("budżet wywołań Voucherify w aplikacji (Sandbox: 100/h)", () => {
     expect(denied.json()).toEqual({ error: "LOYALTY_UNAVAILABLE", message: expect.any(String), retryAfter: 3600 });
     expect(voucherify.fetchMock).toHaveBeenCalledTimes(2);
 
-    // Saldo z cache nadal działa, a nowy e-mail nie potrzebuje Voucherify wcale.
+    // Saldo z cache nadal działa, a nowy e-mail bez budżetu odczytów dostaje bonus
+    // powitalny bez pytania Voucherify (wyszukanie karty jest odczytem — odpada pierwsze).
     expect((await loyalty("anna@example.com")).json<LoyaltyResponse>().points).toBe(2000);
     expect((await loyalty("nowy@example.com")).json<LoyaltyResponse>().points).toBe(1000);
+    expect(voucherify.fetchMock).toHaveBeenCalledTimes(2);
 
-    // Checkout ma swoją rezerwę: pobranie punktów przechodzi mimo wyczerpanych odczytów.
+    // Checkout ma swoją rezerwę: świeży odczyt i pobranie przechodzą mimo wyczerpanych odczytów.
     const reservationId = await reserve("anna@example.com");
     expect((await checkout(reservationId, 1000)).statusCode).toBe(200);
     expect(voucherify.balances.get("CARD-anna@example.com")).toBe(1000);
@@ -322,12 +335,12 @@ describe("budżet wywołań Voucherify w aplikacji (Sandbox: 100/h)", () => {
     await expect(ctx.services.loyalty.awardPoints("anna@example.com", 1)).rejects.toMatchObject({
       code: "LOYALTY_UNAVAILABLE",
     });
-    expect(voucherify.fetchMock).toHaveBeenCalledTimes(4);
+    expect(voucherify.fetchMock).toHaveBeenCalledTimes(5);
 
     const status = (await ctx.app.inject({ method: "GET", url: "/api/ops/status" })).json<OpsStatus>();
     expect(status.loyalty).toMatchObject({
       provider: "voucherify",
-      budget: { limit: 4, used: 4, readCap: 2, checkoutCap: 3, windowSeconds: 3600 },
+      budget: { limit: 5, used: 5, readCap: 2, checkoutCap: 4, windowSeconds: 3600 },
     });
     expect(status.loyalty?.budget.denied).toBeGreaterThanOrEqual(2);
 
@@ -399,8 +412,8 @@ describe("budżet wywołań Voucherify w aplikacji (Sandbox: 100/h)", () => {
     expect(await ctx.services.worker.runOnce()).toBe(true);
     expect(ctx.services.jobs.stats()).toMatchObject({ done: 1, dlq: 0 });
     expect(voucherify.balances.get("CARD-anna@example.com")).toBe(1000 + 890);
-    // Mail poszedł dwa razy z tym samym kluczem — dostawca deduplikuje po Idempotency-Key.
-    expect(new Set(ctx.mailer.calls.map((call) => call.key)).size).toBe(1);
+    // Mail poszedł raz: ponowienie joba wróciło tylko po punkty.
+    expect(ctx.mailer.calls).toHaveLength(1);
   });
 });
 

@@ -260,6 +260,7 @@ describe("Voucherify — limit 100 wywołań/h", () => {
     await expect(provider().createMember("anna@example.com")).resolves.toEqual({
       memberId: "CARD9",
       hasHistory: true,
+      balance: 200,
     });
     const [url] = fetchMock.mock.calls[1] as unknown as [string];
     expect(url).toBe(

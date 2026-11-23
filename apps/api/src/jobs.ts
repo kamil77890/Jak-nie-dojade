@@ -41,9 +41,10 @@ export interface FailOptions {
   maxBackoffMs: number;
   permanent?: boolean;
   /**
-   * Zależność kazała czekać (limit wywołań, Retry-After): job wraca najwcześniej
-   * po tym czasie, a próba nie liczy się do `maxAttempts` — to nie awaria, tylko
-   * kolejka do limitu, więc nie może zepchnąć joba do DLQ.
+   * Czekamy na zależność (limit wywołań z Retry-After albo awaria Voucherify): job
+   * wraca najwcześniej po tym czasie, a próba nie liczy się do `maxAttempts` — to nie
+   * błąd joba, tylko czekanie na usługę, więc nie może zepchnąć joba do DLQ.
+   * Horyzont czekania pilnuje wołający (worker).
    */
   deferMs?: number;
 }
@@ -126,6 +127,27 @@ export class JobQueue {
     this.db
       .prepare("UPDATE jobs SET completed_at = ?, last_error = NULL WHERE id = ?")
       .run(now, jobId);
+  }
+
+  /**
+   * Dopisuje pola do wejścia joba — postęp pracy, który ma przetrwać ponowienie
+   * (np. „mail już wysłany”, gdy job wraca tylko po punkty).
+   */
+  patchInput(jobId: string, patch: JobInput): void {
+    transaction(this.db, () => {
+      const row = this.db.prepare("SELECT input FROM jobs WHERE id = ?").get(jobId) as unknown as
+        | { input: string }
+        | undefined;
+      if (!row) return;
+      let current: JobInput = {};
+      try {
+        const parsed: unknown = JSON.parse(row.input);
+        if (parsed && typeof parsed === "object") current = parsed as JobInput;
+      } catch {
+        current = {};
+      }
+      this.db.prepare("UPDATE jobs SET input = ? WHERE id = ?").run(JSON.stringify({ ...current, ...patch }), jobId);
+    });
   }
 
   /** Błąd przejściowy → backoff. Limit prób albo błąd trwały → DLQ. */

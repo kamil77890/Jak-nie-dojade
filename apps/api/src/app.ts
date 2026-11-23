@@ -27,7 +27,8 @@ import { isTestSecretKey, type PaymentGateway, StripeGateway } from "./payments"
 import { Bulkhead, CallBudget, CircuitBreaker, TokenBucket } from "./resilience";
 import { registerEventRoutes, type Guard } from "./routes/events";
 import { registerOpsRoutes } from "./routes/ops";
-import { registerReservationRoutes } from "./routes/reservations";
+import { type PointsChargeFactory, registerReservationRoutes } from "./routes/reservations";
+import { PointsReleaseSweeper } from "./sweeper";
 import { registerWebhookRoutes } from "./routes/webhooks";
 import { TicketMailWorker } from "./worker";
 
@@ -61,6 +62,8 @@ export interface AppServices {
   paymentBreaker: CircuitBreaker;
   checkout: CheckoutService;
   worker: TicketMailWorker;
+  /** Zwrot punktów porzuconych sesji (III.B4). */
+  sweeper: PointsReleaseSweeper;
   guards: GuardState;
   mailAdmin: MailAdmin;
   startedAt: number;
@@ -113,6 +116,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     {
       cacheTtlMs: config.loyalty.balanceCacheTtlMs,
       staleTtlMs: config.loyalty.balanceStaleTtlMs,
+      noCardTtlMs: config.loyalty.noCardCacheTtlMs,
     },
   );
 
@@ -157,6 +161,15 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     loyalty,
     config,
     clock,
+  });
+
+  // III.B4: punkty porzuconych sesji wracają kilka sekund po wygaśnięciu rezerwacji.
+  const sweeper = new PointsReleaseSweeper({
+    checkout,
+    intervalMs: config.pointsSweep.intervalMs,
+    batchSize: config.pointsSweep.batchSize,
+    clock,
+    onError: (error) => app.log.error({ err: error }, "Zwrot punktów porzuconych sesji nie powiódł się"),
   });
 
   const app = Fastify({
@@ -251,6 +264,16 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     refillPerSecond: config.rateLimit.loyalty.refillPerSecond,
     clock,
   });
+  const pointsIpLimiter = new TokenBucket({
+    capacity: config.rateLimit.pointsCheckoutIp.capacity,
+    refillPerSecond: config.rateLimit.pointsCheckoutIp.refillPerSecond,
+    clock,
+  });
+  const pointsEmailLimiter = new TokenBucket({
+    capacity: config.rateLimit.pointsCheckoutEmail.capacity,
+    refillPerSecond: config.rateLimit.pointsCheckoutEmail.refillPerSecond,
+    clock,
+  });
 
   const isGuardedApi = (request: FastifyRequest): boolean => {
     const path = requestPath(request);
@@ -320,6 +343,33 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     createBulkheadGuard(readPool),
   ];
 
+  // Checkout z punktami kosztuje 1–4 wywołania Voucherify (limit 100/h na cały sklep):
+  // osobny limit per IP i per e-mail, pobierany dopiero, gdy żądanie dochodzi do Voucherify.
+  const pointsCharge: PointsChargeFactory = (request) => {
+    const charged: Array<{ limiter: TokenBucket; key: string }> = [];
+    return {
+      charge: (email: string) => {
+        if (!config.rateLimit.enabled) return;
+        for (const [limiter, key] of [
+          [pointsIpLimiter, `ip:${request.ip}`],
+          [pointsEmailLimiter, `email:${email}`],
+        ] as const) {
+          const result = limiter.consume(key);
+          if (!result.allowed) {
+            // Drugi limit odmówił — pierwszy żeton wraca, żądanie nic nie zużyło.
+            for (const item of charged.splice(0)) item.limiter.refund(item.key);
+            guards.rateLimited += 1;
+            throw new RateLimitedError(result.retryAfterSeconds);
+          }
+          charged.push({ limiter, key });
+        }
+      },
+      refund: () => {
+        for (const item of charged.splice(0)) item.limiter.refund(item.key);
+      },
+    };
+  };
+
   registerEventRoutes(app, { catalog, bookings, readGuards });
   registerReservationRoutes(app, {
     bookings,
@@ -329,6 +379,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     loyaltyGuards,
     reservationGuards,
     purchaseGuards,
+    pointsCharge,
   });
   await registerWebhookRoutes(app, { checkout });
 
@@ -395,6 +446,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
   });
 
   app.addHook("onClose", async () => {
+    await sweeper.stop();
     await worker.stop();
     if (ownsDb) db.close();
   });
@@ -403,6 +455,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
 
   if (options.startWorker && config.worker.enabled) {
     worker.start();
+  }
+  if (options.startWorker && config.pointsSweep.enabled && checkout.enabled) {
+    sweeper.start();
   }
 
   return {
@@ -420,6 +475,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       paymentBreaker,
       checkout,
       worker,
+      sweeper,
       guards,
       mailAdmin,
       startedAt: clock(),
