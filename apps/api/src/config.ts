@@ -64,6 +64,19 @@ export interface AppConfig {
     maxRetries: number;
     breakerFailureThreshold: number;
     breakerResetMs: number;
+    /**
+     * Budżet wywołań Voucherify w oknie godzinowym. Sandbox przyjmuje najwyżej 100/h,
+     * domyślnie bierzemy 90 (zapas na ręczne wywołania i drugą instancję).
+     */
+    hourlyBudget: number;
+    /** Rezerwa tylko dla zwrotów i naliczeń punktów (priorytet `critical`). */
+    reserveCritical: number;
+    /** Rezerwa dla checkoutu: odczyty salda kończą się `reserveCheckout` wcześniej. */
+    reserveCheckout: number;
+    /** Świeżość cache salda; cache to tylko optymalizacja, prawdą jest Voucherify. */
+    balanceCacheTtlMs: number;
+    /** Do jakiego wieku stare saldo może zastąpić 503 przy samym wyświetlaniu. */
+    balanceStaleTtlMs: number;
   };
   /** Wysyłka maili przez Resend (Etap III). Bez klucza zostaje mock HTTP z Etapu I. */
   resend: {
@@ -91,6 +104,8 @@ export interface AppConfig {
     global: BucketConfig;
     reservation: BucketConfig;
     purchase: BucketConfig;
+    /** `GET /api/loyalty` per IP — każdy odczyt może kosztować wywołanie Voucherify. */
+    loyalty: BucketConfig;
   };
   bulkhead: {
     waitTimeoutMs: number;
@@ -199,6 +214,11 @@ export function loadConfig(env: Env = process.env): AppConfig {
         maxRetries: readInt(env, "VOUCHERIFY_MAX_RETRIES", 2, 0),
         breakerFailureThreshold: readInt(env, "VOUCHERIFY_BREAKER_FAILURE_THRESHOLD", 5, 1),
         breakerResetMs: readInt(env, "VOUCHERIFY_BREAKER_RESET_MS", 30_000, 100),
+        hourlyBudget: readInt(env, "VOUCHERIFY_HOURLY_BUDGET", 90, 1),
+        reserveCritical: readInt(env, "VOUCHERIFY_RESERVE_CRITICAL", 20, 0),
+        reserveCheckout: readInt(env, "VOUCHERIFY_RESERVE_CHECKOUT", 20, 0),
+        balanceCacheTtlMs: readInt(env, "LOYALTY_BALANCE_CACHE_SECONDS", 30, 0) * 1000,
+        balanceStaleTtlMs: readInt(env, "LOYALTY_BALANCE_STALE_SECONDS", 600, 0) * 1000,
       };
     })(),
     resend: {
@@ -233,6 +253,13 @@ export function loadConfig(env: Env = process.env): AppConfig {
         refillPerSecond: readInt(env, "RATE_LIMIT_RESERVATION_REFILL_PER_SECOND", 4, 0),
       },
       purchase: { capacity: 40, refillPerSecond: 2 },
+      // Saldo punktów: 10 odczytów na start i 6 na minutę per IP. Klient pyta o saldo
+      // raz po wpisaniu e-maila (UI pamięta wynik), więc to duży zapas dla ludzi,
+      // a skrypt nie wyczerpie godzinowego limitu Voucherify.
+      loyalty: {
+        capacity: readInt(env, "RATE_LIMIT_LOYALTY_CAPACITY", 10, 1),
+        refillPerSecond: readInt(env, "RATE_LIMIT_LOYALTY_PER_MINUTE", 6, 0) / 60,
+      },
     },
     bulkhead: {
       waitTimeoutMs: readInt(env, "BULKHEAD_WAIT_MS", 1_000, 10),
@@ -270,6 +297,7 @@ export function mergeConfig(base: AppConfig, override?: DeepPartial<AppConfig>):
       global: { ...base.rateLimit.global, ...override.rateLimit?.global },
       reservation: { ...base.rateLimit.reservation, ...override.rateLimit?.reservation },
       purchase: { ...base.rateLimit.purchase, ...override.rateLimit?.purchase },
+      loyalty: { ...base.rateLimit.loyalty, ...override.rateLimit?.loyalty },
     },
     bulkhead: {
       ...base.bulkhead,
@@ -333,6 +361,19 @@ export function configWarnings(config: AppConfig): string[] {
   } else if (!config.loyalty.campaignId || !config.loyalty.appId || !config.loyalty.appToken) {
     warnings.push(
       "Voucherify jest wybrany, ale brakuje kompletu kluczy — żądania do Voucherify skończą się 503.",
+    );
+  }
+  const { hourlyBudget, reserveCritical, reserveCheckout } = config.loyalty;
+  if (config.loyalty.provider === "voucherify" && reserveCritical + reserveCheckout >= hourlyBudget) {
+    warnings.push(
+      `VOUCHERIFY_RESERVE_CRITICAL + VOUCHERIFY_RESERVE_CHECKOUT (${reserveCritical + reserveCheckout}) ` +
+        `nie mieści się w VOUCHERIFY_HOURLY_BUDGET (${hourlyBudget}) — odczyty salda zawsze dostaną 503.`,
+    );
+  }
+  if (config.loyalty.provider === "voucherify" && hourlyBudget > 100) {
+    warnings.push(
+      `VOUCHERIFY_HOURLY_BUDGET=${hourlyBudget} przekracza limit Sandboxa (100 wywołań/h) — ` +
+        "Voucherify odpowie 429, zanim zadziała nasz budżet.",
     );
   }
   if (!config.resend.apiKey) {

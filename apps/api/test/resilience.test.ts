@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   Bulkhead,
   BulkheadFullError,
+  CallBudget,
   CircuitBreaker,
   CircuitOpenError,
   TokenBucket,
@@ -155,5 +156,57 @@ describe("bulkhead — E05", () => {
     await expect(pool.acquire()).rejects.toBeInstanceOf(BulkheadFullError);
     release();
     expect(pool.snapshot().active).toBe(0);
+  });
+});
+
+describe("budżet wywołań zależności (Voucherify 100/h)", () => {
+  function budget(clock: () => number) {
+    return new CallBudget({ limit: 5, windowMs: 3_600_000, reserveCritical: 2, reserveCheckout: 1, clock });
+  }
+
+  it("odczyt kończy się pierwszy, checkout później, operacje krytyczne mają rezerwę", () => {
+    const now = 0;
+    const calls = budget(() => now);
+    expect(calls.capFor("read")).toBe(2);
+    expect(calls.capFor("checkout")).toBe(3);
+    expect(calls.capFor("critical")).toBe(5);
+
+    calls.record();
+    calls.record();
+    expect(calls.check("read")).toEqual({ allowed: false, retryAfterSeconds: 3_600 });
+    expect(calls.check("checkout").allowed).toBe(true);
+    calls.record();
+    expect(calls.check("checkout").allowed).toBe(false);
+    expect(calls.check("critical").allowed).toBe(true);
+    calls.record();
+    calls.record();
+    expect(calls.check("critical").allowed).toBe(false);
+    expect(calls.snapshot()).toMatchObject({ limit: 5, used: 5, readCap: 2, checkoutCap: 3, denied: 3 });
+  });
+
+  it("okno jest przesuwne: miejsce wraca, gdy najstarsze wywołanie wypadnie z godziny", () => {
+    let now = 0;
+    const calls = budget(() => now);
+    calls.record();
+    now = 600_000;
+    calls.record();
+    // Odczyt potrzebuje, żeby wypadło wywołanie z t=0 → za 50 minut.
+    expect(calls.check("read")).toEqual({ allowed: false, retryAfterSeconds: 3_000 });
+
+    now = 3_600_000;
+    expect(calls.check("read").allowed).toBe(true);
+    expect(calls.snapshot().used).toBe(1);
+  });
+
+  it("429 z Retry-After blokuje wszystkie priorytety, także krytyczne", () => {
+    let now = 0;
+    const calls = budget(() => now);
+    calls.blockFor(120_000);
+    expect(calls.check("critical")).toEqual({ allowed: false, retryAfterSeconds: 120 });
+    expect(calls.snapshot().blockedUntil).toBe(new Date(120_000).toISOString());
+
+    now = 120_000;
+    expect(calls.check("critical").allowed).toBe(true);
+    expect(calls.snapshot().blockedUntil).toBeNull();
   });
 });

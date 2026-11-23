@@ -1,4 +1,4 @@
-import type { BreakerSnapshot, PoolSnapshot } from "@pas/shared";
+import type { BreakerSnapshot, CallBudgetSnapshot, PoolSnapshot } from "@pas/shared";
 
 export type BreakerState = "closed" | "open" | "half_open";
 
@@ -269,5 +269,109 @@ export class Bulkhead {
         this.active = Math.max(0, this.active - 1);
       }
     };
+  }
+}
+
+/**
+ * Priorytet wywołania płatnego limitem zależności. Odczyt salda można odłożyć,
+ * checkout (pobranie punktów) jest ważniejszy, a zwrot punktów i naliczenie po
+ * zakupie są krytyczne — od nich zależy, czy klient nie straci punktów.
+ */
+export type BudgetPriority = "read" | "checkout" | "critical";
+
+export interface CallBudgetOptions {
+  /** Maksymalna liczba wywołań w oknie (nasz limit, z zapasem względem dostawcy). */
+  limit: number;
+  windowMs: number;
+  /** Wywołania zarezerwowane wyłącznie dla operacji krytycznych. */
+  reserveCritical: number;
+  /** Kolejna rezerwa: checkout może jej użyć, zwykły odczyt salda już nie. */
+  reserveCheckout: number;
+  clock: () => number;
+}
+
+export interface BudgetDecision {
+  allowed: boolean;
+  /** Za ile sekund ten priorytet znów zmieści się w budżecie (0, gdy allowed). */
+  retryAfterSeconds: number;
+}
+
+/**
+ * Budżet wywołań w oknie przesuwnym (log znaczników czasu). Okno przesuwne nigdy
+ * nie przekroczy limitu w żadnej godzinie, więc działa niezależnie od tego, czy
+ * dostawca liczy godzinę „kalendarzowo”, czy od pierwszego wywołania.
+ *
+ * Progi priorytetów: `read` < `checkout` < `critical` (= limit). Zalew odczytów
+ * zużyje najwyżej `limit − reserveCritical − reserveCheckout` wywołań, a reszta
+ * zostaje na zakupy i na zwroty/naliczenia punktów.
+ *
+ * Licznik żyje w pamięci procesu: przy wielu instancjach każda ma własny budżet
+ * i trzeba go podzielić (albo przenieść licznik do Redisa), jak przy TokenBucket.
+ */
+export class CallBudget {
+  private readonly calls: number[] = [];
+  private blockedUntil = 0;
+  private deniedCount = 0;
+
+  constructor(private readonly options: CallBudgetOptions) {}
+
+  capFor(priority: BudgetPriority): number {
+    const { limit, reserveCritical, reserveCheckout } = this.options;
+    if (priority === "critical") return limit;
+    if (priority === "checkout") return Math.max(0, limit - reserveCritical);
+    return Math.max(0, limit - reserveCritical - reserveCheckout);
+  }
+
+  /** Czy wywołanie o danym priorytecie zmieści się teraz w budżecie (bez zużycia). */
+  check(priority: BudgetPriority): BudgetDecision {
+    const now = this.options.clock();
+    this.prune(now);
+
+    if (now < this.blockedUntil) {
+      this.deniedCount += 1;
+      return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((this.blockedUntil - now) / 1000)) };
+    }
+
+    const cap = this.capFor(priority);
+    if (this.calls.length < cap) return { allowed: true, retryAfterSeconds: 0 };
+
+    // Miejsce zwolni się, gdy z okna wypadnie wywołanie o indeksie `length − cap`.
+    this.deniedCount += 1;
+    const oldest = this.calls[this.calls.length - cap] ?? now;
+    const freeAt = oldest + this.options.windowMs;
+    return { allowed: false, retryAfterSeconds: Math.max(1, Math.ceil((freeAt - now) / 1000)) };
+  }
+
+  /** Zapisuje wywołanie, które naprawdę wyszło do dostawcy (także nieudane). */
+  record(): void {
+    const now = this.options.clock();
+    this.prune(now);
+    this.calls.push(now);
+  }
+
+  /** Dostawca odpowiedział 429 z Retry-After — do tego czasu nie wołamy go wcale. */
+  blockFor(ms: number): void {
+    this.blockedUntil = Math.max(this.blockedUntil, this.options.clock() + Math.max(0, ms));
+  }
+
+  snapshot(): CallBudgetSnapshot {
+    const now = this.options.clock();
+    this.prune(now);
+    return {
+      limit: this.options.limit,
+      windowSeconds: Math.round(this.options.windowMs / 1000),
+      used: this.calls.length,
+      readCap: this.capFor("read"),
+      checkoutCap: this.capFor("checkout"),
+      blockedUntil: this.blockedUntil > now ? new Date(this.blockedUntil).toISOString() : null,
+      denied: this.deniedCount,
+    };
+  }
+
+  private prune(now: number): void {
+    const threshold = now - this.options.windowMs;
+    let expired = 0;
+    while (expired < this.calls.length && this.calls[expired]! <= threshold) expired += 1;
+    if (expired > 0) this.calls.splice(0, expired);
   }
 }

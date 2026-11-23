@@ -71,12 +71,15 @@ const SCHEMA = `
 
   -- Etap III: mapowanie e-mail → karta lojalnościowa w Voucherify. Saldo nadal
   -- mieszka w Voucherify; ta tabela pamięta tylko, na którą kartę patrzeć
-  -- i czy bonus powitalny został już przyznany.
+  -- i czy bonus powitalny został już przyznany. Wiersz powstaje dopiero przy
+  -- pierwszym zapisie punktów (sam odczyt salda nie zakłada karty).
+  -- welcome_pending: 0 = bonus przyznany/nienależny, 1 = należny, 2 = niepewna próba.
   CREATE TABLE IF NOT EXISTS loyalty_accounts (
-    email       TEXT PRIMARY KEY,
-    member_id   TEXT NOT NULL,
-    welcomed_at TEXT NOT NULL,
-    created_at  TEXT NOT NULL
+    email           TEXT PRIMARY KEY,
+    member_id       TEXT NOT NULL,
+    welcomed_at     TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    welcome_pending INTEGER NOT NULL DEFAULT 0
   );
 
   -- Zdarzenia webhooka już przetworzone. Stripe dostarcza „co najmniej raz”.
@@ -97,6 +100,8 @@ const COLUMN_MIGRATIONS: Array<{ table: string; column: string; ddl: string }> =
   // Znacznik „punkty już poszły do Voucherify” — job e-mail jest at-least-once.
   { table: "reservations", column: "points_awarded_at", ddl: "TEXT" },
   { table: "checkout_sessions", column: "points_used", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  // Bonus powitalny przyznawany leniwie i dokładnie raz (patrz LoyaltyService.grantWelcome).
+  { table: "loyalty_accounts", column: "welcome_pending", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 function migrate(db: DatabaseSyncType): void {

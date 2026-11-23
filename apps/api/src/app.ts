@@ -23,7 +23,7 @@ import {
 } from "./loyalty";
 import { HttpMailer, MailAdmin, ResendMailer, type Mailer } from "./mail";
 import { isTestSecretKey, type PaymentGateway, StripeGateway } from "./payments";
-import { Bulkhead, CircuitBreaker, TokenBucket } from "./resilience";
+import { Bulkhead, CallBudget, CircuitBreaker, TokenBucket } from "./resilience";
 import { registerEventRoutes, type Guard } from "./routes/events";
 import { registerOpsRoutes } from "./routes/ops";
 import { registerReservationRoutes } from "./routes/reservations";
@@ -54,6 +54,8 @@ export interface AppServices {
   jobs: JobQueue;
   bookings: BookingService;
   loyalty: LoyaltyService;
+  /** Budżet wywołań Voucherify (Sandbox: 100/h) — wspólny dla całego procesu. */
+  loyaltyBudget: CallBudget;
   breaker: CircuitBreaker;
   paymentBreaker: CircuitBreaker;
   checkout: CheckoutService;
@@ -93,11 +95,24 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     resetTimeoutMs: config.loyalty.breakerResetMs,
     clock,
   });
+  // Sandbox Voucherify przyjmuje najwyżej 100 wywołań na godzinę: budżet z priorytetami
+  // (odczyt < checkout < zwrot/naliczenie) pilnuje, żeby odczyty nie zjadły zakupów.
+  const loyaltyBudget = new CallBudget({
+    limit: config.loyalty.hourlyBudget,
+    windowMs: 60 * 60_000,
+    reserveCritical: config.loyalty.reserveCritical,
+    reserveCheckout: config.loyalty.reserveCheckout,
+    clock,
+  });
   const loyalty = new LoyaltyService(
     db,
-    options.loyaltyProvider ?? createLoyaltyProvider(config, loyaltyBreaker),
+    options.loyaltyProvider ?? createLoyaltyProvider(config, loyaltyBreaker, loyaltyBudget, clock),
     config.loyalty.welcomePoints,
     clock,
+    {
+      cacheTtlMs: config.loyalty.balanceCacheTtlMs,
+      staleTtlMs: config.loyalty.balanceStaleTtlMs,
+    },
   );
 
   // Stripe to druga zależność zewnętrzna (E04): własny bezpiecznik, niezależny od poczty.
@@ -229,6 +244,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     refillPerSecond: config.rateLimit.purchase.refillPerSecond,
     clock,
   });
+  const loyaltyLimiter = new TokenBucket({
+    capacity: config.rateLimit.loyalty.capacity,
+    refillPerSecond: config.rateLimit.loyalty.refillPerSecond,
+    clock,
+  });
 
   const isGuardedApi = (request: FastifyRequest): boolean => {
     const path = requestPath(request);
@@ -289,12 +309,22 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
     createBulkheadGuard(writePool),
   ];
 
+  // Saldo punktów: osobny limit per IP przed pulą odczytów. Zły e-mail (400) oddaje
+  // żeton — nie dotknął Voucherify — ale zalew poprawnych adresów dostaje 429.
+  const loyaltyGuards: Guard[] = [
+    createRateLimitGuard(loyaltyLimiter, config.rateLimit.loyalty.capacity, config, guards, {
+      refundStatuses: REFUNDED_STATUSES,
+    }),
+    createBulkheadGuard(readPool),
+  ];
+
   registerEventRoutes(app, { catalog, bookings, readGuards });
   registerReservationRoutes(app, {
     bookings,
     checkout,
     loyalty,
     readGuards,
+    loyaltyGuards,
     reservationGuards,
     purchaseGuards,
   });
@@ -322,6 +352,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       guards,
       mailAdmin,
       readGuards,
+      loyalty: () => ({
+        provider: loyalty.providerName,
+        budget: loyaltyBudget.snapshot(),
+        cache: loyalty.snapshot(),
+      }),
     });
   }
 
@@ -378,6 +413,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<BuiltApp>
       jobs,
       bookings,
       loyalty,
+      loyaltyBudget,
       breaker,
       paymentBreaker,
       checkout,
@@ -405,6 +441,8 @@ function createMailer(config: AppConfig): Mailer {
 function createLoyaltyProvider(
   config: AppConfig,
   breaker: CircuitBreaker,
+  budget: CallBudget,
+  clock: Clock,
 ): VoucherifyLoyaltyProvider | MemoryLoyaltyProvider {
   if (config.loyalty.provider === "voucherify") {
     return new VoucherifyLoyaltyProvider({
@@ -415,6 +453,8 @@ function createLoyaltyProvider(
       timeoutMs: config.loyalty.timeoutMs,
       maxRetries: config.loyalty.maxRetries,
       breaker,
+      budget,
+      clock,
     });
   }
   return new MemoryLoyaltyProvider();
